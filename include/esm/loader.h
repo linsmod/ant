@@ -55,3 +55,12 @@ const struct ant_bundle *js_esm_bundle(ant_t *js);
 bool js_esm_bundle_activate(ant_t *js, const struct ant_bundle *bundle);
 
 #endif
+
+/* --- browser module support ------------------------------------------- */
+/* Fetches a module body for an http(s) URL. Returns a malloc'd, NUL terminated
+ * buffer and sets *out_size, or NULL on failure. Installed by the embedder. */
+typedef char *(*esm_http_fetch_fn)(const char *url, size_t *out_size);
+void esm_set_http_fetch(esm_http_fetch_fn fn);
+bool esm_path_is_url(const char *path);
+bool esm_http_fetch_available(void);
+char *esm_http_fetch_call(const char *url, size_t *out_size);

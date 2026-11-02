@@ -376,6 +376,10 @@ ant_value_t js_execute_compiled_module(ant_t *js, sv_func_t *func);
 ant_value_t js_proxy_apply(ant_t *js, ant_value_t proxy, ant_value_t this_arg, ant_value_t *args, int argc);
 ant_value_t js_proxy_construct(ant_t *js, ant_value_t proxy, ant_value_t *args, int argc, ant_value_t new_target);
 ant_value_t sv_call_native(ant_t *js, ant_value_t func, ant_value_t this_val, ant_value_t *args, int nargs, ant_value_t new_target);
+/* Invoke any callable value (JS closure, bound function, or native cfunc) from C.
+   This is the host-embedding counterpart of sv_call_native(), which only handles
+   T_CFUNC values. Returns undefined when `fn` is not callable. */
+ant_value_t js_call_value(ant_t *js, ant_value_t fn, ant_value_t this_val, ant_value_t *args, int nargs);
 ant_value_t js_array_includes_call(ant_t *js, ant_value_t this_val, ant_value_t *args, int nargs);
 
 const char *typestr(ant_value_type_t t);

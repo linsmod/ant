@@ -9,6 +9,10 @@
 #include "loader_cache.h"
 #include "loader_internal.h"
 
+/* Forward declarations for the browser-module support added below. */
+bool esm_path_is_url(const char *path);
+static char *esm_resolve_url_relative(const char *specifier, const char *base_url);
+
 #include "modules/json.h"
 #include "modules/napi.h"
 #include "modules/uri.h"
@@ -1290,6 +1294,15 @@ static char *esm_resolve_path_cond_unmapped(ant_t *js, const char *specifier, co
     if (base_path && ant_bundle_has_key(vfs, base_path)) return NULL;
   }
 
+  if (esm_path_is_url(specifier))
+    return strdup(specifier);
+
+  if (base_path && esm_path_is_url(base_path)) {
+    if (esm_is_relative_specifier(specifier) || specifier[0] == '/')
+      return esm_resolve_url_relative(specifier, base_path);
+    return NULL;
+  }
+
   if (esm_path_is_absolute(specifier)) {
     return esm_resolve_absolute(js, specifier);
   }
@@ -1678,8 +1691,121 @@ void js_esm_invalidate_files(ant_t *js) {
   esm_loader_cache_cleanup(js);
 }
 
+/* Host hook for browser-style modules: fetch an http(s) module body.
+ * Returns a malloc'd buffer (NUL terminated) or NULL on failure. */
+static esm_http_fetch_fn g_esm_http_fetch = NULL;
+
+void esm_set_http_fetch(esm_http_fetch_fn fn) {
+  g_esm_http_fetch = fn;
+}
+
+bool esm_http_fetch_available(void) {
+  return g_esm_http_fetch != NULL;
+}
+
+char *esm_http_fetch_call(const char *url, size_t *out_size) {
+  if (!g_esm_http_fetch || !url) return NULL;
+  return g_esm_http_fetch(url, out_size);
+}
+
+bool esm_path_is_url(const char *path) {
+  return path && (strncmp(path, "http://", 7) == 0 || strncmp(path, "https://", 8) == 0);
+}
+
+/* Join a relative specifier onto a URL base, normalising ./ and ../ segments. */
+static char *esm_resolve_url_relative(const char *specifier, const char *base_url) {
+  char base[PATH_MAX];
+  char out[PATH_MAX];
+  const char *after_scheme;
+  const char *last_slash;
+  size_t prefix_len;
+  size_t out_len = 0;
+  const char *pos;
+
+  if (!specifier || !base_url) return NULL;
+
+  /* Keep "scheme://host" intact; only the path part participates in joining. */
+  after_scheme = strstr(base_url, "://");
+  if (!after_scheme) return NULL;
+  after_scheme += 3;
+  last_slash = strrchr(after_scheme, '/');
+  prefix_len = last_slash ? (size_t)(last_slash - base_url) + 1 : strlen(base_url);
+
+  if (prefix_len >= sizeof(base)) return NULL;
+  memcpy(base, base_url, prefix_len);
+  base[prefix_len] = '\0';
+
+  if (specifier[0] == '/') {
+    /* Absolute path on the same host. */
+    size_t host_len = (size_t)(after_scheme - base_url);
+    const char *host_end = strchr(after_scheme, '/');
+    size_t keep = host_end ? (size_t)(host_end - base_url) : strlen(base_url);
+
+    if (keep >= sizeof(out)) return NULL;
+    memcpy(out, base_url, keep);
+    out[keep] = '\0';
+    snprintf(out + keep, sizeof(out) - keep, "%s", specifier);
+    return strdup(out);
+  }
+
+  if (prefix_len >= sizeof(out)) return NULL;
+  memcpy(out, base, prefix_len);
+  out[prefix_len] = '\0';
+  out_len = prefix_len;
+
+  /* Append the specifier, resolving . and .. segments. */
+  pos = specifier;
+  while (*pos) {
+    const char *seg_end = strchr(pos, '/');
+    size_t seg_len = seg_end ? (size_t)(seg_end - pos) : strlen(pos);
+
+    if (seg_len == 0 || (seg_len == 1 && pos[0] == '.')) {
+      /* skip */
+    } else if (seg_len == 2 && pos[0] == '.' && pos[1] == '.') {
+      /* drop the last segment, never past the host */
+      if (out_len > prefix_len) {
+        size_t cut = out_len - 1;
+
+        while (cut > prefix_len && out[cut - 1] != '/') --cut;
+        out_len = cut;
+        out[out_len] = '\0';
+      }
+    } else {
+      if (out_len + seg_len + 2 >= sizeof(out)) return NULL;
+      memcpy(out + out_len, pos, seg_len);
+      out_len += seg_len;
+      out[out_len++] = '/';
+      out[out_len] = '\0';
+    }
+
+    if (!seg_end) break;
+    pos = seg_end + 1;
+  }
+
+  if (out_len > prefix_len && out[out_len - 1] == '/')
+    out[out_len - 1] = '\0';
+
+  return strdup(out);
+}
+
 ant_value_t esm_read_file(ant_t *js, const char *path, const char *kind, esm_file_data_t *out) {
   if (js->watch) ant_watch_track(js, path);
+
+  if (esm_path_is_url(path)) {
+    if (!g_esm_http_fetch)
+      return js_mkerr(js, "Cannot load %s over the network: %s", kind, path);
+
+    {
+      size_t fetched = 0;
+      char *body = g_esm_http_fetch(path, &fetched);
+
+      if (!body) return js_mkerr(js, "Cannot fetch %s: %s", kind, path);
+
+      out->data = body;
+      out->size = fetched;
+      return js_mkundef();
+    }
+  }
   
   FILE *fp = fopen(path, "rb");
   if (!fp) return js_mkerr(js, "Cannot open %s: %s", kind, path);

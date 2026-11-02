@@ -22562,6 +22562,18 @@ ant_value_t sv_call_native(
   return js_mkerr_typed(js, JS_ERR_TYPE, "%s is not a function", typestr(vtype(func)));
 }
 
+/* Public host-embedding entry point: call any callable JS value from C.
+   sv_vm_call() already dispatches cfunc, closure, builtin and proxy cases, so
+   this is a thin export used by embedders (e.g. the agave browser DOM
+   bindings) that need to invoke a JS callback from native code. */
+ant_value_t js_call_value(
+  ant_t *js, ant_value_t fn, ant_value_t this_val,
+  ant_value_t *args, int nargs
+) {
+  if (!js || vtype(fn) == kTypeUndefined || vtype(fn) == kTypeNull) return js_mkundef();
+  return sv_vm_call(js->vm, js, fn, this_val, args, nargs, NULL, js_mkundef());
+}
+
 ant_iter_t js_prop_iter_begin(ant_t *js, ant_value_t obj) {
   ant_iter_t iter = {.js = NULL, .obj = NULL, .off = 0};
   

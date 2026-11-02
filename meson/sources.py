@@ -1,5 +1,10 @@
 import sys, os, glob, json
 
+def norm(p):
+  # Meson on Windows wants forward-slash paths; glob/join emit backslashes,
+  # which makes meson's files()/exclude matching fail. Normalize always.
+  return os.path.normpath(p).replace('\\', '/')
+
 data = json.load(open(sys.argv[1]))
 group_name = sys.argv[2]
 section = None
@@ -13,12 +18,13 @@ base = sys.argv[3] if len(sys.argv) > 3 else ''
 
 matched = set()
 for f in group.get('files', []):
-  matched.add(os.path.join(base, f) if base else f)
+  matched.add(norm(os.path.join(base, f) if base else f))
 
 for p in group.get('patterns', []):
   full = os.path.join(base, p) if base else p
-  matched.update(glob.glob(full, recursive=True))
+  for f in glob.glob(full, recursive=True):
+    matched.add(norm(f))
 
-excluded = set(os.path.join(base, e) if base else e for e in group.get('exclude', []))
+excluded = set(norm(os.path.join(base, e) if base else e) for e in group.get('exclude', []))
 matched -= excluded
 print('\n'.join(sorted(matched)))

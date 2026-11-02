@@ -246,6 +246,21 @@ static void esm_write_cache(const char *cache_path, const char *url, const char 
 }
 
 char *esm_fetch_url(ant_t *js, const char *url, size_t *out_len, char **out_error) {
+  /* An embedder (the browser) installs its own fetcher: it owns the network
+   * stack and its own event loop, so tlsuv cannot be used here. */
+  if (esm_http_fetch_available()) {
+    size_t fetched = 0;
+    char *body = esm_http_fetch_call(url, &fetched);
+
+    if (body) {
+      if (out_len) *out_len = fetched;
+      return body;
+    }
+
+    if (out_error) *out_error = strdup("host fetch failed");
+    return NULL;
+  }
+
   char *cache_path = esm_get_cache_path(url);
   if (cache_path) {
     char *cached = esm_read_cache(cache_path, out_len);

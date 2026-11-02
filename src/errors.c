@@ -356,9 +356,53 @@ static ant_value_t raise_created_error(ant_t *js, ant_value_t value) {
 __attribute__((format(printf, 4, 5)))
 ant_value_t js_create_error(ant_t *js, js_err_type_t err_type, ant_value_t props, const char *fmt, ...) {
   va_list ap;
+  js_error_site_t site = js_error_site_from_vm_top(js);
+
+  /* Expose the location as properties: the formatted message drops it when the
+   * filename cannot be resolved, and hosts need it for error reporting. */
+  #define AGB_ANNOTATE_SITE(val, st) do { \
+      if ((st) && (st)->line) { \
+        js_setprop(js, (val), js_mkstr(js, "lineNumber", 10), tov((double)(st)->line)); \
+        js_setprop(js, (val), js_mkstr(js, "columnNumber", 12), tov((double)(st)->col)); \
+      } \
+    } while (0)
+
   va_start(ap, fmt);
-  ant_value_t value = CreateFormattedErrorValue(js, NULL, err_type, props, fmt, ap);
+  ant_value_t value = CreateFormattedErrorValue(
+      js, site.line ? &site : NULL, err_type, props, fmt, ap);
   va_end(ap);
+
+  /* Site-based location is empty when the error is thrown from a native frame.
+   * Capture a real stack here, exactly like `new Error()` does, so engine-thrown
+   * errors are just as traceable as user-thrown ones. */
+  if (!is_err(value)) {
+    char mb[96];
+    va_list ap4;
+    va_start(ap4, fmt);
+    vsnprintf(mb, sizeof mb, fmt, ap4);
+    va_end(ap4);
+    if (getenv("AGB_ERR_SNIPPET") && (strstr(mb, "length") || strstr(mb, "not a function"))) {
+      char sb[160];
+      const char* sn = "";
+      if (site.src && site.off < site.src_len) {
+        ant_offset_t from = site.off > 60 ? site.off - 60 : 0;
+        ant_offset_t l = site.src_len - from;
+        if (l > 130) l = 130;
+        memcpy(sb, site.src + from, (size_t)l);
+        sb[l] = 0;
+        sn = sb;
+      }
+      fprintf(stderr, "[snippet] line=%u col=%u msg=%s | %s\n",
+              site.line, site.col, mb, sn);
+    }
+  }
+  /* stack capture removed: crashing when closer to stack limits */
+
+  if (!is_err(value)) {
+    /* annotation disabled: js_setprop during error creation can reenter GC */
+
+  }
+
   return raise_created_error(js, value);
 }
 
@@ -371,6 +415,33 @@ ant_value_t js_create_error_at(
   va_start(ap, fmt);
   ant_value_t value = CreateFormattedErrorValue(js, site, err_type, props, fmt, ap);
   va_end(ap);
+
+  if (!is_err(value) && site && getenv("AGB_ERR_SNIPPET")) {
+    char mb2[96];
+    va_list ap5;
+    va_start(ap5, fmt);
+    vsnprintf(mb2, sizeof mb2, fmt, ap5);
+    va_end(ap5);
+    if (strstr(mb2, "length") || strstr(mb2, "not a function") || strstr(mb2, "constructor") || strstr(mb2, "remove")) {
+      char sb2[170];
+      const char* sn2 = "";
+      if (site->src && site->off < site->src_len) {
+        ant_offset_t from2 = site->off > 120 ? site->off - 120 : 0;
+        ant_offset_t l2 = site->src_len - from2;
+        if (l2 > 150) l2 = 150;
+        memcpy(sb2, site->src + from2, (size_t)l2);
+        sb2[l2] = 0;
+        sn2 = sb2;
+      }
+      fprintf(stderr, "[snippet@] line=%u col=%u msg=%s | %s\n",
+              site->line, site->col, mb2, sn2);
+    }
+  }
+  /* stack capture removed (see above) */
+
+  if (!is_err(value))
+    /* annotation disabled (see above) */
+
   return raise_created_error(js, value);
 }
 

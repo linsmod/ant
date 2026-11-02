@@ -1,3 +1,4 @@
+#include <compat.h> // IWYU pragma: keep  (MinGW has no strndup)
 #include <stdlib.h>
 #include <string.h>
 #include <uthash.h>

@@ -48,6 +48,26 @@
 #include "esm/loader.h"
 #include "esm/commonjs.h"
 
+#ifdef _WIN32
+#include <direct.h>
+// MinGW-w64 (this toolchain) does not provide POSIX mkdtemp(). Provide a small
+// fallback: replace the trailing XXXXXX in the template with random characters
+// and create the directory, matching mkdtemp semantics (retry on collision).
+static char *ant_mkdtemp_fallback(char *tpl) {
+  size_t len = strlen(tpl);
+  char *p = tpl + len;
+  while (p > tpl && p[-1] == 'X') p--;
+  static const char chars[] = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+  for (int attempt = 0; attempt < 128; attempt++) {
+    for (char *q = p; q < tpl + len; q++) q[0] = chars[rand() % (sizeof(chars) - 1)];
+    if (_mkdir(tpl) == 0) return tpl;
+    if (errno != EEXIST) return NULL;
+  }
+  return NULL;
+}
+#define mkdtemp ant_mkdtemp_fallback
+#endif
+
 typedef enum {
   FS_ENC_NONE = 0,
   FS_ENC_UTF8,

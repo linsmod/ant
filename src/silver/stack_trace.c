@@ -52,9 +52,17 @@ js_error_site_t js_error_site_from_frame(sv_func_t *func, int bc_offset) {
 js_error_site_t js_error_site_from_vm_top(ant_t *js) {
   sv_stack_iter_t it;
   sv_stack_entry_t top;
-  
-  sv_stack_iter_init(js ? js->vm : NULL, &it, 1, true);
-  bool found = sv_stack_iter_next(&it, &top);
+  bool found = false;
+
+  sv_stack_iter_init(js ? js->vm : NULL, &it, 8, true);
+
+  /* Native (cfunc) frames carry no bytecode, so an error thrown from a builtin
+   * would otherwise report nothing. Walk down to the nearest JS frame: that is
+   * the call site that triggered the builtin. */
+  while (sv_stack_iter_next(&it, &top)) {
+    if (top.func && top.bc_off >= 0) { found = true; break; }
+  }
+
   sv_stack_iter_finish(&it);
   
   return found 
