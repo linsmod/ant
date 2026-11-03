@@ -848,6 +848,8 @@ static void gc_scan_frame_span(
     gc_mark_value(js, frame->completion.value);
     gc_mark_value(js, frame->arguments_obj);
     gc_mark_value(js, frame->eval_env);
+    for (int e = 0; e < SV_FRAME_EVAL_SCOPE_SLOTS; e++)
+      gc_mark_value(js, frame->eval_scope_envs[e]);
   }
 
   for (sv_upvalue_t *uv = open_upvalues; uv; uv = uv->next) {

@@ -109,9 +109,14 @@ typedef struct sv_line_table {
   int count;
   int hint;
   bool ascii;
-  int col_line;
-  uint32_t col_off;
-  uint32_t col;
+  uint32_t source_len;
+  /* Non-ASCII sources only: UTF-16 unit count before every SV_LINE_PREFIX_STRIDE
+   * bytes. Column lookup is then "prefix + at most one stride of byte steps";
+   * walking from the line start instead is O(offset) per emitted instruction,
+   * which makes compiling a large single-line bundle (minified JS with one
+   * non-ASCII literal) quadratic. */
+  uint32_t *u16_prefix;
+  uint32_t u16_prefix_count;
 } sv_line_table_t;
 
 typedef struct {

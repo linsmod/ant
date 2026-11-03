@@ -253,8 +253,20 @@ static inline ant_value_t sv_op_closure(
   vm->stack[vm->sp++] = func_val;
   ant_value_t eval_env = sv_frame_eval_env(js, frame);
   if (*ip == OP_CLOSURE_EVAL) {
-    eval_env = sv_eval_capture_env(vm, js, frame, sv_get_u32(ip + 5));
-    if (is_err(eval_env)) return eval_env;
+    uint32_t scope_index = sv_get_u32(ip + 5);
+
+    /* Capture once per call, not once per closure: the environment of an eval
+     * scope is the same record for every closure it creates, and capturing it
+     * again walks the whole open-upvalue chain per binding. */
+    if (scope_index < SV_FRAME_EVAL_SCOPE_SLOTS &&
+        is_object_type(frame->eval_scope_envs[scope_index])) {
+      eval_env = frame->eval_scope_envs[scope_index];
+    } else {
+      eval_env = sv_eval_capture_env(vm, js, frame, scope_index);
+      if (is_err(eval_env)) return eval_env;
+      if (scope_index < SV_FRAME_EVAL_SCOPE_SLOTS)
+        frame->eval_scope_envs[scope_index] = eval_env;
+    }
   }
   GC_ROOT_SAVE(mark, js);
   if (*ip == OP_CLOSURE_EVAL) GC_ROOT_PIN(js, eval_env);

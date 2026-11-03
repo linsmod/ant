@@ -1,6 +1,9 @@
 #ifndef SV_EVAL_ENV_H
 #define SV_EVAL_ENV_H
 
+#include <stdlib.h>
+#include <stdint.h>
+
 #include "hash.h"
 #include "shapes.h"
 #include "gc/roots.h"
@@ -76,6 +79,17 @@ static inline sv_upvalue_t *sv_eval_capture_binding(
   }
 }
 
+typedef struct {
+  ant_value_t *slot;
+  uint32_t     index;
+} sv_eval_capture_req_t;
+
+static inline int sv_eval_capture_req_cmp(const void *a, const void *b) {
+  uintptr_t x = (uintptr_t)((const sv_eval_capture_req_t *)a)->slot;
+  uintptr_t y = (uintptr_t)((const sv_eval_capture_req_t *)b)->slot;
+  return x < y ? -1 : (x > y ? 1 : 0);
+}
+
 static inline sv_eval_env_state_t *sv_eval_env_state_create(
   sv_vm_t *vm, sv_frame_t *frame, const sv_eval_scope_t *scope
 ) {
@@ -90,12 +104,85 @@ static inline sv_eval_env_state_t *sv_eval_env_state_create(
   state->cell_count = scope->count;
   state->arguments_obj = frame->arguments_obj;
 
-  for (uint32_t i = 0; i < scope->count; i++) {
-    state->cells[i] = sv_eval_capture_binding(vm, frame, &scope->bindings[i]);
-    if (!state->cells[i]) { free(state); return NULL; }
+  /* Capturing one binding at a time walks the open-upvalue chain once per
+   * binding, i.e. O(bindings * chain) per environment. Under a bundle wrapped
+   * in one big eval the chain holds thousands of entries and environments are
+   * created tens of thousands of times, so that product dominates start-up.
+   * Collect the slots, sort them by address and merge them into the (already
+   * address-sorted) chain in a single pass: O(bindings log bindings + chain). */
+  {
+    sv_eval_capture_req_t inline_reqs[32];
+    sv_eval_capture_req_t *reqs = inline_reqs;
+    uint32_t nreq = 0;
+
+    if (scope->count > (uint32_t)(sizeof(inline_reqs) / sizeof(inline_reqs[0]))) {
+      reqs = (sv_eval_capture_req_t *)malloc((size_t)scope->count * sizeof(*reqs));
+      if (!reqs) { free(state); return NULL; }
+    }
+
+    for (uint32_t i = 0; i < scope->count; i++) {
+      const sv_runtime_binding_t *binding = &scope->bindings[i];
+      ant_value_t *slot = NULL;
+
+      switch (binding->kind & SV_EVAL_BIND_KIND_MASK) {
+        case SV_EVAL_BIND_PARAM:
+          if (!frame->bp || (int)binding->index >= sv_frame_arg_slots(frame)) goto capture_failed;
+          slot = &frame->bp[binding->index];
+          break;
+        case SV_EVAL_BIND_LOCAL:
+          if (!frame->lp || binding->index >= (uint16_t)frame->func->max_locals) goto capture_failed;
+          slot = &frame->lp[binding->index];
+          break;
+        case SV_EVAL_BIND_UPVALUE:
+          if (!frame->upvalues || binding->index >= (uint16_t)frame->upvalue_count) goto capture_failed;
+          state->cells[i] = frame->upvalues[binding->index];
+          if (!state->cells[i]) goto capture_failed;
+          continue;
+        default:
+          goto capture_failed;
+      }
+
+      reqs[nreq].slot = slot;
+      reqs[nreq].index = i;
+      nreq++;
+    }
+
+    if (nreq > 1) qsort(reqs, nreq, sizeof(*reqs), sv_eval_capture_req_cmp);
+
+    {
+      sv_upvalue_t **pp = &vm->open_upvalues;
+
+      /* Descending requests against a descending chain: one forward pass. */
+      for (int j = (int)nreq - 1; j >= 0; j--) {
+        ant_value_t *slot = reqs[j].slot;
+
+        while (*pp && (uintptr_t)(*pp)->location > (uintptr_t)slot) pp = &(*pp)->next;
+
+        sv_upvalue_t *uv;
+        if (*pp && (*pp)->location == slot) {
+          uv = *pp;
+        } else {
+          uv = js_upvalue_alloc(vm->js);
+          if (!uv) goto capture_failed;
+          uv->location = slot;
+          uv->next = *pp;
+          *pp = uv;
+          if (vm->fp >= 0 && vtype(vm->frames[vm->fp].arguments_obj) != kTypeUndefined)
+            js_arguments_link_upvalue(vm->js, &vm->frames[vm->fp], uv);
+          pp = &uv->next;
+        }
+        state->cells[reqs[j].index] = uv;
+      }
+    }
+
+    if (reqs != inline_reqs) free(reqs);
+    return state;
+
+capture_failed:
+    if (reqs != inline_reqs) free(reqs);
+    free(state);
+    return NULL;
   }
-  
-  return state;
 }
 
 static inline const sv_runtime_binding_t *sv_eval_env_find_binding(

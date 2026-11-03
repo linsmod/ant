@@ -118,6 +118,59 @@ void sv_compile_ctx_cleanup(sv_compiler_t *ctx) {
   }
 }
 
+#define SV_LINE_PREFIX_STRIDE 256u
+
+/* UTF-16 unit count before every SV_LINE_PREFIX_STRIDE-th byte of the source.
+ * Built once per non-ASCII source; the first non-ASCII literal in a minified
+ * bundle otherwise turns every column lookup back into a scan from the line
+ * start, which is quadratic on a single-line multi-megabyte file. */
+static void sv_line_table_build_prefix(sv_line_table_t *lt) {
+  uint32_t len = lt->source_len;
+  uint32_t slots = len / SV_LINE_PREFIX_STRIDE + 1;
+  uint32_t *prefix = (uint32_t *)malloc((size_t)slots * sizeof(uint32_t));
+  if (!prefix) return;
+
+  uint32_t units = 0;
+  uint32_t next = SV_LINE_PREFIX_STRIDE;
+  prefix[0] = 0;
+
+  for (uint32_t i = 0; i < len; i++) {
+    if (i == next) {
+      prefix[i / SV_LINE_PREFIX_STRIDE] = units;
+      next += SV_LINE_PREFIX_STRIDE;
+    }
+    units += utf16_units_for_utf8_byte((unsigned char)lt->source[i]);
+  }
+  if (len % SV_LINE_PREFIX_STRIDE == 0)
+    prefix[len / SV_LINE_PREFIX_STRIDE] = units;
+
+  lt->u16_prefix = prefix;
+  lt->u16_prefix_count = slots;
+}
+
+/* UTF-16 units before byte `off`: one table read plus at most one stride of
+ * byte stepping. */
+static uint32_t sv_line_table_u16_before(const sv_line_table_t *lt, uint32_t off) {
+  uint32_t len = lt->source_len;
+
+  if (off > len) off = len;
+
+  if (!lt->u16_prefix) {             /* allocation failure: degrade to a walk */
+    uint32_t units = 0;
+    for (uint32_t i = 0; i < off; i++)
+      units += utf16_units_for_utf8_byte((unsigned char)lt->source[i]);
+    return units;
+  }
+
+  uint32_t idx = off / SV_LINE_PREFIX_STRIDE;
+  uint32_t units = idx < lt->u16_prefix_count ? lt->u16_prefix[idx] : 0;
+  uint32_t pos = idx * SV_LINE_PREFIX_STRIDE;
+
+  for (; pos < off; pos++)
+    units += utf16_units_for_utf8_byte((unsigned char)lt->source[pos]);
+  return units;
+}
+
 sv_line_table_t *sv_compile_ctx_build_line_table(const char *source, ant_offset_t source_len) {
   if (!source || source_len <= 0) return NULL;
 
@@ -127,9 +180,11 @@ sv_line_table_t *sv_compile_ctx_build_line_table(const char *source, ant_offset_
   int cap = (int)(source_len / 32) + 64;
   lt->offsets = malloc((size_t)cap * sizeof(uint32_t));
   lt->source = source;
+  lt->source_len = (uint32_t)source_len;
   lt->count = 0;
   lt->hint = 0;
-  lt->col_line = -1;
+  lt->u16_prefix = NULL;
+  lt->u16_prefix_count = 0;
   lt->offsets[lt->count++] = 0;
 
   unsigned char high = 0;
@@ -145,12 +200,15 @@ sv_line_table_t *sv_compile_ctx_build_line_table(const char *source, ant_offset_
   }
 
   lt->ascii = high < 0x80;
+  if (!lt->ascii)
+    sv_line_table_build_prefix(lt);
   return lt;
 }
 
 void sv_compile_ctx_free_line_table(sv_line_table_t *lt) {
   if (!lt) return;
   free(lt->offsets);
+  free(lt->u16_prefix);
   free(lt);
 }
 
@@ -180,22 +238,14 @@ found:
   lt->hint = line;
   *out_line = (uint32_t)(line + 1);
   uint32_t start = lt->offsets[line];
-  if (lt->ascii) {
-    *out_col = off - start + 1;
-    return;
-  }
 
-  uint32_t pos = start, col = 1;
-  if (lt->col_line == line && lt->col_off <= off) {
-    pos = lt->col_off;
-    col = lt->col;
-  }
-  for (; pos < off; pos++) col += utf16_units_for_utf8_byte((unsigned char)lt->source[pos]);
-
-  lt->col_line = line;
-  lt->col_off = off;
-  lt->col = col;
-  *out_col = col;
+  /* ASCII columns are byte columns: no conversion needed. For anything else
+   * the prefix table makes this O(1) plus one stride of byte stepping,
+   * independent of where the line starts and of how far `off` has moved
+   * backwards since the previous emission (compilation does revisit source). */
+  *out_col = lt->ascii
+    ? off - start + 1
+    : sv_line_table_u16_before(lt, off) - sv_line_table_u16_before(lt, start) + 1;
 }
 
 uint32_t sv_compile_ctx_hash_local_name(const char *name, uint32_t len) {

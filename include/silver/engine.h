@@ -739,6 +739,8 @@ typedef enum {
   SV_RESUME_RETURN = 2,
 } sv_resume_kind_t;
 
+#define SV_FRAME_EVAL_SCOPE_SLOTS 4
+
 typedef struct sv_frame {
   uint8_t *ip;
   ant_value_t *bp;
@@ -762,7 +764,19 @@ typedef struct sv_frame {
   
   ant_value_t arguments_obj;
   ant_value_t eval_env;
+  /* Captured eval environment per scope index, memoised for the lifetime of the
+   * call. Every closure created by the same eval scope shares one environment,
+   * so re-capturing it per closure only repeats work: capture walks the open
+   * upvalue chain once per binding (O(bindings * open upvalues)), which turns
+   * a bundle wrapped in a single giant eval into a quadratic start-up. */
+  ant_value_t eval_scope_envs[SV_FRAME_EVAL_SCOPE_SLOTS];
 } sv_frame_t;
+
+static inline void sv_frame_reset_eval_scopes(sv_frame_t *frame) {
+  if (!frame) return;
+  for (int i = 0; i < SV_FRAME_EVAL_SCOPE_SLOTS; i++)
+    frame->eval_scope_envs[i] = js_mkundef();
+}
 
 static inline ant_value_t sv_frame_eval_env(ant_t *js, const sv_frame_t *frame) {
   return frame && is_object_type(frame->eval_env) ? frame->eval_env : js->global;

@@ -151,6 +151,7 @@ ant_value_t jit_helper_str_append_local(
     .argc = argc,
     .arguments_obj = js_mkundef(),
     .eval_env = js_mkundef(),
+    .eval_scope_envs = { js_mkundef(), js_mkundef(), js_mkundef(), js_mkundef() },
   };
 
   return sv_string_builder_append_slot(vm, js, &frame, func, slot_idx, rhs);
@@ -172,6 +173,7 @@ ant_value_t jit_helper_str_append_local_snapshot(
     .argc = argc,
     .arguments_obj = js_mkundef(),
     .eval_env = js_mkundef(),
+    .eval_scope_envs = { js_mkundef(), js_mkundef(), js_mkundef(), js_mkundef() },
   };
 
   return sv_string_builder_append_snapshot_slot(vm, js, &frame, func, slot_idx, lhs, rhs);
@@ -192,6 +194,7 @@ ant_value_t jit_helper_str_flush_local(
     .argc = argc,
     .arguments_obj = js_mkundef(),
     .eval_env = js_mkundef(),
+    .eval_scope_envs = { js_mkundef(), js_mkundef(), js_mkundef(), js_mkundef() },
   };
 
   ant_value_t flush = sv_string_builder_flush_slot(vm, js, &frame, slot_idx);
@@ -455,6 +458,7 @@ ant_value_t jit_helper_strict_arguments(
     .argc = argc,
     .arguments_obj = js_mkundef(),
     .eval_env = js_mkundef(),
+    .eval_scope_envs = { js_mkundef(), js_mkundef(), js_mkundef(), js_mkundef() },
   };
   
   ant_value_t result = js_create_arguments_object(

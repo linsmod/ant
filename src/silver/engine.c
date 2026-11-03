@@ -1288,6 +1288,7 @@ static inline ant_value_t sv_execute_entry_common(
   vm->frames[vm->fp].upvalue_count = upvalue_count;
   vm->frames[vm->fp].callee = callee_func;
   vm->frames[vm->fp].eval_env = eval_env;
+  sv_frame_reset_eval_scopes(&vm->frames[vm->fp]);
   vm->frames[vm->fp].new_target = new_target;
 
   ant_realm_t *prev_realm = ant_realm_switch(js, func->realm);
@@ -1800,6 +1801,7 @@ static __attribute__((noinline)) ant_value_t sv_async_inline_call(
   frame->completion.value = js_mkundef();
   frame->arguments_obj = js_mkundef();
   frame->eval_env = sv_closure_eval_env(closure);
+  sv_frame_reset_eval_scopes(frame);
 
   ant_value_t *call_bp = NULL;
   ant_value_t *call_lp = NULL;
@@ -2511,6 +2513,7 @@ ant_value_t sv_execute_frame(sv_vm_t *vm, sv_func_t *func, ant_value_t this, ant
         frame->completion.value = js_mkundef();
         frame->arguments_obj = js_mkundef();
         frame->eval_env = sv_closure_eval_env(closure);
+        sv_frame_reset_eval_scopes(frame);
         ant_value_t *call_bp = NULL;
         ant_value_t *call_lp = NULL;
         ant_value_t call_stage_err = sv_stage_frame_args(
@@ -2645,6 +2648,7 @@ ant_value_t sv_execute_frame(sv_vm_t *vm, sv_func_t *func, ant_value_t this, ant
         frame->completion.value = js_mkundef();
         frame->arguments_obj = js_mkundef();
         frame->eval_env = sv_closure_eval_env(closure);
+        sv_frame_reset_eval_scopes(frame);
         ant_value_t *call_bp = NULL;
         ant_value_t *call_lp = NULL;
         ant_value_t call_stage_err = sv_stage_frame_args(
@@ -3014,6 +3018,7 @@ ant_value_t sv_execute_frame(sv_vm_t *vm, sv_func_t *func, ant_value_t this, ant
     frame->completion.value = js_mkundef();
     frame->arguments_obj = js_mkundef();
     frame->eval_env = sv_closure_eval_env(closure);
+    sv_frame_reset_eval_scopes(frame);
     frame->bp = base;
     frame->lp = new_lp;
     frame->upvalues = closure->upvalues;
