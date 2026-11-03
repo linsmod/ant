@@ -19,6 +19,7 @@
 bool gc_disabled = false;
 
 void gc_state_init(ant_t *js) {
+
   js->gc.nursery_threshold = GC_NURSERY_THRESHOLD;
   js->gc.major_every_n = GC_MAJOR_EVERY_N_MINOR;
   js->gc.major_live_growth_x256 = 384;
@@ -289,7 +290,10 @@ static void gc_clear_remembered_builders(ant_t *js) {
   js->rope_gc.remembered_builder_len = 0;
 }
 
+static void gc_stats_note(int major);
+
 void gc_run(ant_t *js) {
+  gc_stats_note(1);
   if (__builtin_expect(gc_disabled, 0)) return;
   js->gc_running = true;
   
@@ -360,7 +364,27 @@ void gc_run(ant_t *js) {
   js->gc_running = false;
 }
 
+/* Diagnostics: AGB_GC_DEBUG=1 prints how often the collector runs. */
+static unsigned long gc_minor_calls = 0;
+static unsigned long gc_major_calls = 0;
+static int gc_stats_hook = -1;
+
+static void gc_stats_dump(void) {
+  fprintf(stderr, "[gc] minors=%lu majors=%lu\n", gc_minor_calls, gc_major_calls);
+  fflush(stderr);
+}
+
+static void gc_stats_note(int major) {
+  if (gc_stats_hook < 0) {
+    gc_stats_hook = getenv("AGB_GC_DEBUG") ? 1 : 0;
+    if (gc_stats_hook) atexit(gc_stats_dump);
+  }
+  if (!gc_stats_hook) return;
+  if (major) gc_major_calls++; else gc_minor_calls++;
+}
+
 void gc_run_minor(ant_t *js) {
+  gc_stats_note(0);
   if (__builtin_expect(gc_disabled, 0)) return;
   js->gc_running = true;
   uint64_t start_ns = gc_now_ns();

@@ -235,6 +235,7 @@ ant_value_t mkprop_interned_exact(ant_t *js, ant_value_t obj, const char *intern
 ant_value_t mkprop_append_fast(ant_t *js, ant_value_t obj, const char *key, size_t len, ant_value_t v);
 
 ant_value_t setprop_cstr(ant_t *js, ant_value_t obj, const char *key, size_t len, ant_value_t v);
+ant_value_t setprop_interned_ptr(ant_t *js, ant_value_t obj, const char *interned, ant_value_t v);
 ant_value_t setprop_interned(ant_t *js, ant_value_t obj, const char *key, size_t len, ant_value_t v);
 
 ant_value_t js_codegen_refused(ant_t *js);
@@ -365,6 +366,7 @@ bool js_instance_of_proto(ant_t *js, ant_value_t obj, ant_value_t ctor_proto);
 void js_set_exotic_ops(ant_value_t obj, const ant_exotic_ops_t *ops);
 
 ant_value_t js_call_getter(ant_t *js, ant_value_t receiver, ant_value_t getter);
+ant_value_t js_call_setter(ant_t *js, ant_value_t receiver, ant_value_t setter, ant_value_t value);
 ant_value_t js_mkproxy_host(ant_t *js, ant_value_t target, const ant_host_proxy_ops_t *ops);
 ant_value_t js_copy_data_props(ant_t *js, ant_value_t dst, ant_value_t src, const ant_value_t *excluded, int excluded_count);
 ant_value_t js_primitive_prototype(ant_t *js, uint8_t type);

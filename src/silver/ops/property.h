@@ -1468,14 +1468,21 @@ static inline bool sv_put_field_try_cached(
     const ant_shape_prop_t *prop = ant_shape_prop_at(ptr->shape, ic->cached_index);
     if (prop &&
         prop->type == ANT_SHAPE_KEY_STRING &&
-        prop->key.interned == a->str &&
-        !prop->has_getter &&
-        !prop->has_setter &&
-        (prop->attrs & ANT_PROP_ATTR_WRITABLE) != 0) {
-      ant_object_prop_set_unchecked(ptr, ic->cached_index, val);
-      gc_write_barrier_prop(js, ptr, val);
-      ant_property_mutation_invalidate(js, ptr, a->str);
-      return true;
+        prop->key.interned == a->str) {
+      /* Accessor with a setter: call it right here instead of falling back to
+       * the proxy-aware generic setprop_impl() for every assignment. */
+      if (prop->has_setter && is_callable(prop->setter)) {
+        *out = js_call_setter(js, obj, prop->setter, val);
+        return true;
+      }
+
+      if (!prop->has_getter && !prop->has_setter &&
+          (prop->attrs & ANT_PROP_ATTR_WRITABLE) != 0) {
+        ant_object_prop_set_unchecked(ptr, ic->cached_index, val);
+        gc_write_barrier_prop(js, ptr, val);
+        ant_property_mutation_invalidate(js, ptr, a->str);
+        return true;
+      }
     }
   }
 
@@ -1548,7 +1555,7 @@ static inline ant_value_t sv_put_field_miss(
     ant_shape_retain(old_shape);
   }
 
-  ant_value_t out = setprop_interned(js, obj, a->str, a->len, val);
+  ant_value_t out = setprop_interned_ptr(js, obj, a->str, val);
   if (is_err(out)) {
     if (old_shape) ant_shape_release(old_shape);
     return out;

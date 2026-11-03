@@ -4533,6 +4533,22 @@ static ant_value_t call_proto_accessor(
     if (vtype(symbol) == kTypeSymbol) return js_symbol_description_value(js, symbol);
   }
 
+  /* Fast path: a plain synchronous closure (the common case for
+   * Object.defineProperty getters and class accessors) is called directly,
+   * skipping the call-plan construction sv_vm_call does for every call. */
+  {
+    sv_callback_t cb = sv_callback_prepare(js, accessor, prim);
+
+    if (cb.closure) {
+      ant_value_t fast = sv_callback_call(js->vm, js, &cb, arg, arg_count);
+
+      if (is_setter)
+        return is_err(fast) ? fast : (arg ? *arg : js_mkundef());
+
+      return fast;
+    }
+  }
+
   ant_value_t result = sv_vm_call(js->vm, js, accessor, prim, arg, arg_count, NULL, js_mkundef());
   if (is_setter) return is_err(result) ? result : (arg ? *arg : js_mkundef());
 
@@ -4548,6 +4564,10 @@ static ant_value_t js_prop_load_from(ant_t *js, ant_value_t receiver, ant_prop_l
 ant_value_t js_call_getter(ant_t *js, ant_value_t receiver, ant_value_t getter) {
   if (vtype(getter) != kTypeBuiltin) return call_proto_accessor(js, receiver, getter, true, NULL, 0, false);
   return sv_call_builtin_this(js, getter, receiver, NULL, 0, js_mkundef());
+}
+
+ant_value_t js_call_setter(ant_t *js, ant_value_t receiver, ant_value_t setter, ant_value_t value) {
+  return call_proto_accessor(js, receiver, setter, true, &value, 1, true);
 }
 
 // TODO: decompose into smaller helpers
@@ -5213,10 +5233,43 @@ ant_value_t js_define_own_prop(ant_t *js, ant_value_t obj, const char *key, size
   return is_err(created) ? created : v;
 }
 
+/* Same as setprop_interned() but the key is already interned (the interpreter
+ * hands us a->str, so the intern lookup would be repeated for every write). */
+ant_value_t setprop_interned_ptr(ant_t *js, ant_value_t obj, const char *interned, ant_value_t v) {
+  if (interned) {
+    ant_object_t *ptr = is_object_type(obj) ? js_obj_ptr(js_as_obj(obj)) : NULL;
+    int depth = 0;
+
+    while (ptr && !ptr->flags.is_exotic && ptr->shape && depth < 16) {
+      int32_t idx = ant_shape_lookup_interned(ptr->shape, interned);
+
+      if (idx >= 0) {
+        const ant_shape_prop_t *prop = ant_shape_prop_at(ptr->shape, (uint32_t)idx);
+
+        if (prop && prop->has_setter && is_callable(prop->setter))
+          return js_call_setter(js, obj, prop->setter, v);
+
+        break;
+      }
+
+      if (!is_object_type(ptr->proto))
+        break;
+
+      ptr = js_obj_ptr(js_as_obj(ptr->proto));
+      ++depth;
+    }
+  }
+
+  {
+    ant_value_t k = js_mkstr(js, interned ? interned : "", interned ? strlen(interned) : 0);
+    if (is_err(k)) return k;
+    return js_setprop(js, obj, k, v);
+  }
+}
+
 ant_value_t setprop_interned(ant_t *js, ant_value_t obj, const char *key, size_t len, ant_value_t v) {
-  ant_value_t k = js_mkstr(js, key, len);
-  if (is_err(k)) return k;
-  return js_setprop(js, obj, k, v);
+  const char *interned = intern_string(js, key, len);
+  return setprop_interned_ptr(js, obj, interned, v);
 }
 
 ant_value_t js_setprop_readonly_nonconfigurable(ant_t *js, ant_value_t obj, const char *key, size_t keylen, ant_value_t v) {
@@ -19409,7 +19462,7 @@ static ant_value_t proxy_get_with_receiver(ant_t *js, ant_value_t proxy, const c
       ant_value_t key_val = js_mkstr(js, key, key_len);
       
       ant_value_t args[3] = { target, key_val, receiver };
-      ant_value_t result = sv_vm_call(js->vm, js, get_trap, js_mkundef(), args, 3, NULL, js_mkundef());
+      ant_value_t result = sv_vm_call(js->vm, js, get_trap, handler, args, 3, NULL, js_mkundef());
       if (is_err(result)) return result;
 
       ant_prop_loc_t prop_off = lkp(js, target, key, key_len);
@@ -19472,7 +19525,7 @@ static ant_value_t proxy_set_with_receiver(ant_t *js, ant_value_t proxy, const c
   if (vtype(set_trap) != kTypeUndefined) {
       ant_value_t key_val = js_mkstr(js, key, key_len);
       ant_value_t args[4] = { target, key_val, value, receiver };
-      ant_value_t result = sv_vm_call(js->vm, js, set_trap, js_mkundef(), args, 4, NULL, js_mkundef());
+      ant_value_t result = sv_vm_call(js->vm, js, set_trap, data->handler, args, 4, NULL, js_mkundef());
       if (is_err(result)) return result;
       if (!js_truthy(js, result)) return js_false;
       {
@@ -19621,7 +19674,7 @@ static ant_value_t proxy_set_sym(
   if (is_err(set_trap) || vtype(set_trap) == kTypeUndefined) return set_trap;
   
   ant_value_t args[4] = { target, sym, value, receiver };
-  ant_value_t result = sv_vm_call(js->vm, js, set_trap, js_mkundef(), args, 4, NULL, js_mkundef());
+  ant_value_t result = sv_vm_call(js->vm, js, set_trap, data->handler, args, 4, NULL, js_mkundef());
   if (is_err(result)) return result;
   if (!js_truthy(js, result)) return js_false;
   
@@ -19693,7 +19746,7 @@ static ant_value_t proxy_has(ant_t *js, ant_value_t proxy, const char *key, size
   if (vtype(has_trap) != kTypeUndefined) {
       ant_value_t key_val = js_mkstr(js, key, key_len);
       ant_value_t args[2] = { target, key_val };
-      ant_value_t result = sv_vm_call(js->vm, js, has_trap, js_mkundef(), args, 2, NULL, js_mkundef());
+      ant_value_t result = sv_vm_call(js->vm, js, has_trap, handler, args, 2, NULL, js_mkundef());
       if (is_err(result)) return result;
 
       if (!js_truthy(js, result)) {
@@ -19756,7 +19809,7 @@ static ant_value_t proxy_delete(ant_t *js, ant_value_t proxy, const char *key, s
   if (vtype(delete_trap) != kTypeUndefined) {
       ant_value_t key_val = js_mkstr(js, key, key_len);
       ant_value_t args[2] = { target, key_val };
-      ant_value_t result = sv_vm_call(js->vm, js, delete_trap, js_mkundef(), args, 2, NULL, js_mkundef());
+      ant_value_t result = sv_vm_call(js->vm, js, delete_trap, handler, args, 2, NULL, js_mkundef());
       if (is_err(result)) return result;
       if (js_truthy(js, result)) {
         ant_prop_loc_t prop_off = lkp(js, target, key, key_len);
@@ -19802,7 +19855,7 @@ static ant_value_t proxy_get_val(ant_t *js, ant_value_t proxy, ant_value_t key_v
   if (is_err(get_trap)) return get_trap;
   if (vtype(get_trap) != kTypeUndefined) {
     ant_value_t args[3] = { target, prop_key, proxy };
-    return sv_vm_call(js->vm, js, get_trap, js_mkundef(), args, 3, NULL, js_mkundef());
+    return sv_vm_call(js->vm, js, get_trap, handler, args, 3, NULL, js_mkundef());
   }
 
   if (vtype(prop_key) == kTypeSymbol) return js_get_sym_with_receiver(js, target, prop_key, proxy);
@@ -19944,7 +19997,7 @@ static ant_value_t proxy_has_val(ant_t *js, ant_value_t proxy, ant_value_t key_v
   if (is_err(has_trap)) return has_trap;
   if (vtype(has_trap) != kTypeUndefined) {
     ant_value_t args[2] = { target, prop_key };
-    return sv_vm_call(js->vm, js, has_trap, js_mkundef(), args, 2, NULL, js_mkundef());
+    return sv_vm_call(js->vm, js, has_trap, handler, args, 2, NULL, js_mkundef());
   }
 
   if (vtype(prop_key) == kTypeSymbol) {
@@ -20376,7 +20429,7 @@ static ant_value_t proxy_delete_val(ant_t *js, ant_value_t proxy, ant_value_t ke
   if (is_err(delete_trap)) return delete_trap;
   if (vtype(delete_trap) != kTypeUndefined) {
       ant_value_t args[2] = { target, key_val };
-      ant_value_t result = sv_vm_call(js->vm, js, delete_trap, js_mkundef(), args, 2, NULL, js_mkundef());
+      ant_value_t result = sv_vm_call(js->vm, js, delete_trap, handler, args, 2, NULL, js_mkundef());
       if (is_err(result)) return result;
       if (js_truthy(js, result) && vtype(key_val) == kTypeSymbol) {
         ant_prop_loc_t prop_off = lkp_sym(target, (ant_offset_t)vdata(key_val));
@@ -22687,7 +22740,11 @@ static void report_unhandled_rejection(ant_t *js, ant_value_t promise, ant_value
   }
 
   print_unhandled_promise_rejection(js, reason);
-  if (!js->uncaught_nonfatal) process_exit_with(js, EXIT_FAILURE);
+
+  /* Browser build: gc_state_init() sets uncaught_nonfatal on every ant_t, so
+   * this only fires for embedders that opt back into Node's fatal behaviour. */
+  if (!js->uncaught_nonfatal)
+    process_exit_with(js, EXIT_FAILURE);
 }
 
 void js_check_unhandled_rejections(ant_t *js) {
