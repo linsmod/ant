@@ -381,7 +381,8 @@ ant_value_t js_create_error(ant_t *js, js_err_type_t err_type, ant_value_t props
     va_start(ap4, fmt);
     vsnprintf(mb, sizeof mb, fmt, ap4);
     va_end(ap4);
-    if (getenv("AGB_ERR_SNIPPET") && (strstr(mb, "length") || strstr(mb, "not a function"))) {
+    if (getenv("AGB_ERR_SNIPPET") && (strstr(mb, "length") || strstr(mb, "not a function") ||
+                                      strstr(mb, "undefined") || strstr(mb, "prototype"))) {
       char sb[160];
       const char* sn = "";
       if (site.src && site.off < site.src_len) {
@@ -416,25 +417,32 @@ ant_value_t js_create_error_at(
   ant_value_t value = CreateFormattedErrorValue(js, site, err_type, props, fmt, ap);
   va_end(ap);
 
-  if (!is_err(value) && site && getenv("AGB_ERR_SNIPPET")) {
+  if (!is_err(value) && getenv("AGB_ERR_SNIPPET")) {
+    /* A null site means the throw came from a native property helper; the VM
+     * top still knows the executing function and bytecode offset, so fall back
+     * to it instead of dropping the snippet (that is where "reading
+     * 'prototype'" style errors are raised from). */
+    js_error_site_t fallback = js_error_site_from_vm_top(js);
+    const js_error_site_t *st = site ? site : &fallback;
     char mb2[96];
     va_list ap5;
     va_start(ap5, fmt);
     vsnprintf(mb2, sizeof mb2, fmt, ap5);
     va_end(ap5);
-    if (strstr(mb2, "length") || strstr(mb2, "not a function") || strstr(mb2, "constructor") || strstr(mb2, "remove")) {
+    if (strstr(mb2, "length") || strstr(mb2, "not a function") || strstr(mb2, "constructor")
+        || strstr(mb2, "remove") || strstr(mb2, "prototype") || strstr(mb2, "undefined")) {
       char sb2[170];
       const char* sn2 = "";
-      if (site->src && site->off < site->src_len) {
-        ant_offset_t from2 = site->off > 120 ? site->off - 120 : 0;
-        ant_offset_t l2 = site->src_len - from2;
+      if (st->src && st->off < st->src_len) {
+        ant_offset_t from2 = st->off > 120 ? st->off - 120 : 0;
+        ant_offset_t l2 = st->src_len - from2;
         if (l2 > 150) l2 = 150;
-        memcpy(sb2, site->src + from2, (size_t)l2);
+        memcpy(sb2, st->src + from2, (size_t)l2);
         sb2[l2] = 0;
         sn2 = sb2;
       }
       fprintf(stderr, "[snippet@] line=%u col=%u msg=%s | %s\n",
-              site->line, site->col, mb2, sn2);
+              st->line, st->col, mb2, sn2);
     }
   }
   /* stack capture removed (see above) */
