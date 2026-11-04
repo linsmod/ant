@@ -64,3 +64,7 @@ void esm_set_http_fetch(esm_http_fetch_fn fn);
 bool esm_path_is_url(const char *path);
 bool esm_http_fetch_available(void);
 char *esm_http_fetch_call(const char *url, size_t *out_size);
+
+/* Name a module gets in stack frames while it evaluates. data: URLs carry the
+ * source itself, so they are reduced to a short stable label. */
+const char *esm_frame_filename(ant_t *js, const char *path);

@@ -35,6 +35,12 @@ struct AntbEngine {
      * the stack frames of already-compiled scripts: error stacks then rendered
      * garbled file names. */
     struct AntbFilename* filenames;
+    /* ant_runtime_init() only stores the argv pointer; it is read long after
+     * the call (process.argv, and worker_build_argv() when a Worker starts,
+     * which strdup()s argv[0]). A stack-local vector dangled: the first worker
+     * still saw "agave" in the dead frame, the next one got NULL and the new
+     * worker thread died in strlen() during bootstrap. */
+    char* argv[2];
 };
 
 struct AntbValue {
@@ -111,12 +117,10 @@ AntbEngine* antb_engine_create(const void* stack_anchor)
     js_setstackbase(e->js, (void*)stack_anchor);
     js_setstacklimit(e->js, 32u * 1024u * 1024u);
 
-    {
-        char* argv[2];
-        argv[0] = (char*)"agave";
-        argv[1] = NULL;
-        ant_runtime_init(e->js, 1, argv, NULL);
-    }
+    /* Lifetime must match the engine: ant keeps this pointer. */
+    e->argv[0] = (char*)"agave";
+    e->argv[1] = NULL;
+    ant_runtime_init(e->js, 1, e->argv, NULL);
     ant_bootstrap_modules(e->js);
     js_set_filename(e->js, "agave://page.js");
 

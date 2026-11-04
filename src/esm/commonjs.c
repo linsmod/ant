@@ -536,7 +536,7 @@ ant_value_t esm_load_commonjs_module(
   ant_value_t filename_val = js_get(js, module_obj, "filename");
 
   const char *prev_filename = js->filename;
-  js_set_filename(js, module_path);
+  js_set_filename(js, esm_frame_filename(js, module_path));
 
   ant_value_t result = esm_eval_commonjs_function(
     js, code, code_len,

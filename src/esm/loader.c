@@ -2165,6 +2165,26 @@ static ant_value_t esm_instantiate_static_dependencies(
   return js_mkundef();
 }
 
+/* Name used for stack frames while a module evaluates. A data: URL is the
+ * source itself (a worker script started from one, see esm_remote/worker
+ * entry): using it verbatim makes every stack trace and every uncaught-error
+ * report print the whole script as base64. Frames only need a short stable
+ * label, so hash the URL; it stays stable across runs of the same script. */
+const char *esm_frame_filename(ant_t *js, const char *path) {
+  char label[32];
+  uint32_t hash = 2166136261u;
+
+  if (!path || strncmp(path, "data:", 5) != 0) return path;
+
+  for (const char *p = path; *p; p++)
+    hash = (hash ^ (uint8_t)*p) * 16777619u;
+
+  snprintf(label, sizeof label, "data:script/%08x", hash);
+
+  const char *interned = intern_string(js, label, strlen(label));
+  return interned ? interned : path;
+}
+
 static ant_value_t esm_load_module(ant_t *js, esm_module_t *mod, ant_value_t require_module) {
   if (mod->is_loaded) return mod->namespace_obj;
   if (mod->is_loading) return mod->namespace_obj;
@@ -2274,12 +2294,19 @@ static ant_value_t esm_load_module(ant_t *js, esm_module_t *mod, ant_value_t req
   if (mod->format == MODULE_EVAL_FORMAT_UNKNOWN)
     mod->format = esm_decide_module_format(js, mod->resolved_path);
 
+  /* Functions are compiled while the module is parsed, so the frame name has
+   * to be in place before esm_parse_module_record: setting it only around the
+   * evaluation leaves the parse-time frames carrying the raw data: URL. */
+  const char *prev_filename = js->filename;
+  js_set_filename(js, esm_frame_filename(js, mod->resolved_path));
+
   esm_module_record_t record;
   ant_value_t parse_res = esm_parse_module_record(
     js, mod->resolved_path, js_code, js_len,
     &mod->format, &record
   );
   if (is_err(parse_res)) {
+    js_set_filename(js, prev_filename);
     free(content);
     mod->is_loading = false;
     return parse_res;
@@ -2288,7 +2315,6 @@ static ant_value_t esm_load_module(ant_t *js, esm_module_t *mod, ant_value_t req
   ant_value_t ns = esm_make_namespace_object(js);
   mod->namespace_obj = ns;
 
-  const char *prev_filename = js->filename;
   ant_module_t eval_ctx;
   
   ant_value_t prep_res = esm_prepare_eval_ctx(
@@ -2299,6 +2325,7 @@ static ant_value_t esm_load_module(ant_t *js, esm_module_t *mod, ant_value_t req
   );
   
   if (is_err(prep_res)) {
+    js_set_filename(js, prev_filename);
     esm_module_record_cleanup(js, &record);
     free(content);
     mod->is_loading = false;
@@ -2308,6 +2335,7 @@ static ant_value_t esm_load_module(ant_t *js, esm_module_t *mod, ant_value_t req
   if (record.is_esm) {
     ant_value_t dep_res = esm_instantiate_static_dependencies(js, mod, record.program, ns);
     if (is_err(dep_res)) {
+      js_set_filename(js, prev_filename);
       esm_module_record_cleanup(js, &record);
       free(content);
       mod->is_loading = false;
@@ -2315,7 +2343,6 @@ static ant_value_t esm_load_module(ant_t *js, esm_module_t *mod, ant_value_t req
     }
   } else esm_module_record_cleanup(js, &record);
 
-  js_set_filename(js, mod->resolved_path);
   js_module_eval_ctx_push(js, &eval_ctx);
 
   ant_value_t result = record.is_esm
