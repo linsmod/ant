@@ -17,6 +17,7 @@
 #include "cfunc.h"     /* js_mkfun_dyn */
 #include "reactor.h"   /* ant_uv_run, js_poll_events */
 #include "runtime.h"
+#include "debug.h"   /* sv_debug_enable: AGB_JIT_DEBUG */
 #include "bootstrap.h"
 #include "ptr.h"        /* js_set_native / js_get_native (static inline) */
 #include "gc/roots.h"   /* gc_register_root: keep wrapper objects alive */
@@ -152,6 +153,14 @@ AntbEngine* antb_engine_create(const void* stack_anchor)
     ant_bootstrap_modules(e->js);
     js_set_filename(e->js, "agave://page.js");
 
+    /* AGB_JIT_DEBUG=1 turns on ant's JIT diagnostics (ineligible ops, OSR
+     * compile results, bailout disables) for embedded engines: the CLI's
+     * ANT_DEBUG parser is not reachable from the bridge. */
+    {
+        const char* jd = getenv("AGB_JIT_DEBUG");
+        if (jd && jd[0] && strcmp(jd, "0") != 0) sv_debug_enable(SV_DEBUG_JIT_WARN);
+    }
+
     return e;
 }
 
@@ -202,7 +211,7 @@ void antb_set_filename(AntbEngine* engine, const char* name)
         js_set_filename(engine->js, node ? node->text : "agave://page.js");
 }
 
-AntbValue* antb_eval(AntbEngine* engine, const char* src, int len, char** err)
+static AntbValue* antb_eval_mode(AntbEngine* engine, const char* src, int len, char** err, int script)
 {
     ant_value_t v;
 
@@ -211,7 +220,16 @@ AntbValue* antb_eval(AntbEngine* engine, const char* src, int len, char** err)
     if (!engine || !engine->js || !src || len < 0)
         return NULL;
 
-    v = js_eval_bytecode_eval(engine->js, src, (size_t)len);
+    /* AGB_EVAL_MODE=script is the old compatibility switch; new callers use
+     * antb_eval_script(), which is what page scripts need. */
+    if (!script) {
+        const char* mode = getenv("AGB_EVAL_MODE");
+        if (mode && strcmp(mode, "script") == 0) script = 1;
+    }
+
+    v = script
+        ? js_eval_bytecode(engine->js, src, (size_t)len)
+        : js_eval_bytecode_eval(engine->js, src, (size_t)len);
 
     if (is_err(v)) {
         /* The value returned by eval is an error marker; the real thrown value
@@ -236,6 +254,15 @@ AntbValue* antb_eval(AntbEngine* engine, const char* src, int len, char** err)
     }
 }
 
+AntbValue* antb_eval(AntbEngine* engine, const char* src, int len, char** err)
+{
+    return antb_eval_mode(engine, src, len, err, 0);
+}
+
+AntbValue* antb_eval_script(AntbEngine* engine, const char* src, int len, char** err)
+{
+    return antb_eval_mode(engine, src, len, err, 1);
+}
 /* Evaluates `src` as an ES module whose URL is `filename`, so relative imports
  * resolve against it. Errors are reported the same way as antb_eval(). */
 AntbValue* antb_eval_module(AntbEngine* engine, const char* src, int len,
@@ -2574,4 +2601,8 @@ void antb_class_install_properties(AntbEngine* engine, AntbClass* klass, AntbVal
     js_set_native(instance->v, entry, AGB_TAG_GETTER);
     js_set_getter(instance->v, agb_getter_trampoline);
 }
+
+
+
+
 

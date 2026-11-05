@@ -64,6 +64,14 @@ AGB_API void antb_engine_destroy(AntbEngine* engine);
  * malloc'd UTF-8 message there (release with antb_free). */
 AGB_API AntbValue* antb_eval(AntbEngine* engine, const char* src, int len, char** err);
 
+/* Evaluates `src` with classic <script> semantics (a program): top-level
+ * var/function declarations become properties of the global object, which is
+ * what page scripts do and what the property inline caches cover. antb_eval()
+ * keeps direct-eval semantics (bindings live in an eval environment), and
+ * reads of those bindings miss the caches in JITed code - measurably ~20x
+ * slower on real page scripts. Use this for <script>/prelude/polyfills. */
+AGB_API AntbValue* antb_eval_script(AntbEngine* engine, const char* src, int len, char** err);
+
 /* ES module support: evaluates `src` as a module whose URL is `filename`
  * (relative imports resolve against it), and installs the http(s) fetcher used
  * for module bodies. The fetcher must return a malloc'd NUL-terminated buffer. */

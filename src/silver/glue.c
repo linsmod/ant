@@ -417,8 +417,10 @@ ant_value_t jit_helper_get_eval_global(
   if (func && bc_off >= 0 && bc_off < func->code_len) ip = func->code + bc_off;
 
   bool found = false;
+  ant_value_t env = jit_eval_env(js, closure);
   ant_value_t val = sv_eval_global_get_interned_ic(
-    js, jit_eval_env(js, closure), str, len, func, ip, &found);
+    js, env, str, len, func, ip, &found);
+
   if (!found && !allow_missing)
     return js_mkerr_typed(
       js, JS_ERR_REFERENCE, "'%.*s' is not defined", (int)len, str);
@@ -1611,6 +1613,38 @@ ant_value_t jit_helper_get_elem(
     }
   }
   
+  /* Dynamic string key on a plain object: let the site's IC answer it
+   * (shape + interned key -> slot) before the generic property walk. Without
+   * this, obj[k] re-walks the shape/prototype chain on every read - the
+   * QIMEI-style G[key] pattern - while obj.key (an atom known at compile time)
+   * was already covered by the field IC. */
+  if (ic && vtype(key) == kTypeString && vtype(obj) == kTypeObject) {
+    ant_object_t *receiver = js_obj_ptr(obj);
+
+    if (receiver && !receiver->flags.is_exotic && receiver->shape) {
+      ant_offset_t length = 0;
+      const char *text = (const char *)(uintptr_t)vstr(js, key, &length);
+
+      if (text) {
+        /* The flat-data memo turns a repeated key (keys[i], the same string
+         * value every iteration) into a pointer compare instead of hashing
+         * and probing the intern table again. */
+        const char *interned = intern_find_flat(js, text, (size_t)length);
+
+        if (!interned)
+          interned = intern_string(js, text, (size_t)length);
+
+        if (interned) {
+          sv_atom_t atom = { .str = interned, .len = (uint32_t)length };
+          ant_value_t result;
+
+          if (sv_try_prop_get_ic_lookup(js, obj, &atom, ic, true, &result, NULL))
+            return result;
+        }
+      }
+    }
+  }
+
   uint8_t ot = vtype(obj);
   if (ot == kTypeNull || ot == kTypeUndefined) {
     js_error_site_t site = js_error_site_from_bc(func, bc_off);
@@ -2005,4 +2039,5 @@ ant_value_t jit_helper_realm_reenter(
   ant_realm_enter(js, prev_realm);
   return result;
 }
+
 
