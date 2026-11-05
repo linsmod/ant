@@ -72,6 +72,44 @@ bool gc_pin_permanent(ant_t *js, ant_value_t value) {
   return true;
 }
 
+/* Undoes gc_pin_permanent(). The value may still be reachable - unpinning only
+ * removes the C-side guarantee that it survives a collection. Used when a
+ * wrapper (or a whole realm) goes away: a permanent wrapper object would
+ * otherwise keep its realm marked for the lifetime of the engine. */
+bool gc_unpin_permanent(ant_t *js, ant_value_t value) {
+  if (!js || !is_tagged(value)) return false;
+
+  uint8_t type = vtype_tagged(value);
+  if (type == kTypeFunction) {
+    for (size_t i = 0; i < js->permanent_value_len; i++) {
+      if (js->permanent_values[i] != value) continue;
+      js->permanent_values[i] = js->permanent_values[js->permanent_value_len - 1];
+      js->permanent_value_len--;
+      return true;
+    }
+    return false;
+  }
+
+  if (((1u << type) & GC_OBJ_TYPE_MASK) == 0) return false;
+  if (type == kTypeError && vdata(value) < 2) return false;
+
+  ant_object_t *obj = (ant_object_t *)vptr(value);
+  if (!obj || !obj->flags.gc_permanent) return false;
+
+  for (size_t i = 0; i < js->permanent_root_len; i++) {
+    if (js->permanent_roots[i] != obj) continue;
+
+    js->permanent_roots[i] = js->permanent_roots[js->permanent_root_len - 1];
+    js->permanent_root_len--;
+    if (js->permanent_root_traced > js->permanent_root_len)
+      js->permanent_root_traced = js->permanent_root_len;
+    break;
+  }
+
+  obj->flags.gc_permanent = 0;
+  return true;
+}
+
 void gc_pop_roots(ant_t *js, size_t mark) {
   if (!js) return;
   js->c_root_count = (mark <= js->c_root_count) ? mark : 0;

@@ -28,6 +28,7 @@ size_t gc_root_scope(ant_t *js);
 
 bool gc_push_root(ant_t *js, ant_value_t *slot);
 bool gc_pin_permanent(ant_t *js, ant_value_t value);
+bool gc_unpin_permanent(ant_t *js, ant_value_t value);
 bool gc_temp_root_set(gc_temp_root_handle_t handle, ant_value_t value);
 bool gc_temp_root_push(gc_temp_root_scope_t *scope, ant_value_t value);
 

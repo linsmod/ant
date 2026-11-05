@@ -2260,6 +2260,7 @@ void antb_value_assign(AntbValue* out, const AntbValue* value)
 
 typedef struct {
     ant_t*      js;
+    void*       realm;      /* the realm the wrapper object lives in */
     void*       ptr;
     unsigned    tag;
     void*       owner;      /* the document that owns the native object */
@@ -2276,11 +2277,12 @@ static int                g_wrapperHash[AGB_WRAPPER_HASH_SIZE];   /* index+1 */
 static int                g_wrapper_count = 0;   /* entries in use */
 static int                g_wrapper_free  = 0;    /* free list head (index+1) */
 
-static unsigned agbWrapperBucket(ant_t* js, void* ptr, unsigned tag)
+static unsigned agbWrapperBucket(ant_t* js, void* realm, void* ptr, unsigned tag)
 {
     unsigned long long h = ((unsigned long long)(size_t)ptr >> 4) ^ tag;
 
     h ^= (unsigned long long)(size_t)js >> 4;
+    h ^= (unsigned long long)(size_t)realm >> 4;
     h *= 1099511628211ULL;
     return (unsigned)(h % AGB_WRAPPER_HASH_SIZE);
 }
@@ -2288,20 +2290,27 @@ static unsigned agbWrapperBucket(ant_t* js, void* ptr, unsigned tag)
 AntbValue* antb_wrap_native_owner(AntbEngine* engine, void* ptr, unsigned tag, void* owner)
 {
     int idx;
+    void* realm;
 
     if (!engine || !engine->js || !ptr)
         return NULL;
 
+    /* One wrapper object PER REALM: the same DOM node seen from two frames is
+     * two objects with two prototypes, as the spec requires (`parent.document`
+     * accessed from an iframe is not the iframe's own wrapper). */
+    realm = (void*)engine->js->realm;
+
     /* O(1) lookup: the old linear scan over every wrapper turned node-heavy
      * pages into O(n^2) (163.com spent minutes here). */
     {
-        unsigned bucket = agbWrapperBucket(engine->js, ptr, tag);
+        unsigned bucket = agbWrapperBucket(engine->js, realm, ptr, tag);
         int i = g_wrapperHash[bucket];
 
         while (i) {
             agb_wrapper_entry* e = &g_wrappers[i - 1];
 
-            if (e->used && e->js == engine->js && e->ptr == ptr && e->tag == tag)
+            if (e->used && e->js == engine->js && e->realm == realm &&
+                e->ptr == ptr && e->tag == tag)
                 return alloc_value(engine->js, e->value);
             i = e->next;
         }
@@ -2326,6 +2335,7 @@ AntbValue* antb_wrap_native_owner(AntbEngine* engine, void* ptr, unsigned tag, v
         js_set_native(obj, ptr, (uint32_t)tag);
 
         e->js    = engine->js;
+        e->realm = realm;
         e->ptr   = ptr;
         e->tag   = tag;
         e->owner = owner;
@@ -2337,7 +2347,7 @@ AntbValue* antb_wrap_native_owner(AntbEngine* engine, void* ptr, unsigned tag, v
         gc_pin_permanent(e->js, e->value);
 
         {
-            unsigned bucket = agbWrapperBucket(e->js, e->ptr, e->tag);
+            unsigned bucket = agbWrapperBucket(e->js, e->realm, e->ptr, e->tag);
 
             e->next = g_wrapperHash[bucket];
             g_wrapperHash[bucket] = idx + 1;
@@ -2499,7 +2509,7 @@ static void agbWrapperRelease(int idx)
     if (!e->used)
         return;
 
-    bucket = agbWrapperBucket(e->js, e->ptr, e->tag);
+    bucket = agbWrapperBucket(e->js, e->realm, e->ptr, e->tag);
     link = &g_wrapperHash[bucket];
 
     while (*link) {
@@ -2512,6 +2522,12 @@ static void agbWrapperRelease(int idx)
 
         link = &g_wrappers[cur].next;
     }
+
+    /* Drop the permanent pin: a pinned wrapper object would keep its realm
+     * marked (and therefore alive) for the lifetime of the engine, which
+     * defeats per-frame realm collection. JS references keep it alive on
+     * their own. */
+    gc_unpin_permanent(e->js, e->value);
 
     e->used = 0;
     e->next = 0;
@@ -2536,6 +2552,23 @@ void antb_release_owner(AntbEngine* engine, void* owner)
         agb_wrapper_entry* e = &g_wrappers[i];
 
         if (e->used && e->js == engine->js && e->owner == owner)
+            agbWrapperRelease(i);
+    }
+}
+
+/* Releases the wrappers that belong to one realm: a frame's JS world is going
+ * away and its wrapper objects (and their permanent pins) must not outlive it. */
+void antb_release_realm(AntbEngine* engine, AntbRealm* realm)
+{
+    int i;
+
+    if (!engine || !engine->js || !realm)
+        return;
+
+    for (i = 0; i < AGB_MAX_WRAPPERS; ++i) {
+        agb_wrapper_entry* e = &g_wrappers[i];
+
+        if (e->used && e->js == engine->js && e->realm == (void*)realm)
             agbWrapperRelease(i);
     }
 }

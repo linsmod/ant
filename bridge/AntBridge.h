@@ -81,6 +81,10 @@ AGB_API AntbValue* antb_realm_global(AntbEngine* engine, AntbRealm* realm);
 /* Frees realms that nothing references any more (after antb_gc()). */
 AGB_API void antb_realm_collect(AntbEngine* engine);
 
+/* Drops the wrapper objects created in `realm` (and their permanent pins):
+ * call it when a frame's realm goes away. */
+AGB_API void antb_release_realm(AntbEngine* engine, AntbRealm* realm);
+
 /* 1 when both handles denote the same value (useful for identity checks:
  * a realm's `Array` must not be identical to another realm's). */
 AGB_API int antb_value_identical(const AntbValue* a, const AntbValue* b);
