@@ -13,6 +13,7 @@
 #include "ant.h"
 #include "esm/loader.h"
 #include "internal.h"
+#include "realm.h"      /* ant_realm_create / enter / collect */
 #include "errors.h"   /* js_print_stack_trace_vm */
 #include "cfunc.h"     /* js_mkfun_dyn */
 #include "reactor.h"   /* ant_uv_run, js_poll_events */
@@ -31,6 +32,8 @@ static void*     g_loggerUser = NULL;
 /* Most recently created engine: only used by the crash path, where the host
  * has no engine handle anymore (antb_print_last_js_stack). */
 static AntbEngine* g_lastEngine = NULL;
+
+static AntbValue* alloc_value(ant_t* js, ant_value_t v);
 
 void antb_set_logger(AntbLogFn fn, void* user)
 {
@@ -361,6 +364,60 @@ void antb_print_js_stack(AntbEngine* engine)
 void antb_print_last_js_stack(void)
 {
     antb_print_js_stack(g_lastEngine);
+}
+
+/* ---- realms ------------------------------------------------------------- */
+
+AntbRealm* antb_realm_create(AntbEngine* engine)
+{
+    ant_realm_t* realm;
+
+    if (!engine || !engine->js)
+        return NULL;
+
+    /* ant_realm_create() restores the previous realm before returning. */
+    realm = ant_realm_create(engine->js);
+    return (AntbRealm*)realm;
+}
+
+AntbRealm* antb_realm_enter(AntbEngine* engine, AntbRealm* realm)
+{
+    if (!engine || !engine->js || !realm)
+        return NULL;
+
+    return (AntbRealm*)ant_realm_enter(engine->js, (ant_realm_t*)realm);
+}
+
+AntbRealm* antb_realm_current(AntbEngine* engine)
+{
+    if (!engine || !engine->js)
+        return NULL;
+
+    return (AntbRealm*)engine->js->realm;
+}
+
+AntbValue* antb_realm_global(AntbEngine* engine, AntbRealm* realm)
+{
+    ant_realm_t* r = (ant_realm_t*)realm;
+
+    if (!engine || !engine->js || !r)
+        return NULL;
+
+    return alloc_value(engine->js, r->global);
+}
+
+void antb_realm_collect(AntbEngine* engine)
+{
+    if (engine && engine->js)
+        ant_realm_collect(engine->js);
+}
+
+int antb_value_identical(const AntbValue* a, const AntbValue* b)
+{
+    if (!a || !b)
+        return 0;
+
+    return a->js == b->js && a->v == b->v;
 }
 
 void antb_set_uncaught_nonfatal(AntbEngine* engine, int on)

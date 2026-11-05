@@ -57,6 +57,34 @@ AGB_API AntbEngine* antb_engine_create(const void* stack_anchor);
 
 AGB_API void antb_engine_destroy(AntbEngine* engine);
 
+/* ---- realms: one isolate, many globals ---------------------------------- */
+/* A realm is an independent global object with its own intrinsics (Array,
+ * Object, ... all differ), its own global lexical scope and its own microtask
+ * queue, sharing one VM - the same thing node's vm.createContext() uses.
+ * agave maps one realm per document/frame (docs/design-per-frame-realm.md).
+ *
+ * Objects from another realm can be used directly (same VM); identity checks
+ * like `parent.Array === Array` and `x instanceof ParentArray` are then false,
+ * which is the spec behaviour.
+ *
+ * antb_realm_create() leaves the caller in the realm it was in before the call.
+ * The returned handle stays valid until the realm is collected; use
+ * antb_realm_collect() to drop unreferenced ones (call it after a GC). */
+typedef struct AntbRealm AntbRealm;
+
+AGB_API AntbRealm* antb_realm_create(AntbEngine* engine);
+/* Switches the isolate into `realm`; returns the realm that was current. */
+AGB_API AntbRealm* antb_realm_enter(AntbEngine* engine, AntbRealm* realm);
+AGB_API AntbRealm* antb_realm_current(AntbEngine* engine);
+/* The realm's global object (the `window` of that frame). */
+AGB_API AntbValue* antb_realm_global(AntbEngine* engine, AntbRealm* realm);
+/* Frees realms that nothing references any more (after antb_gc()). */
+AGB_API void antb_realm_collect(AntbEngine* engine);
+
+/* 1 when both handles denote the same value (useful for identity checks:
+ * a realm's `Array` must not be identical to another realm's). */
+AGB_API int antb_value_identical(const AntbValue* a, const AntbValue* b);
+
 /* ---- evaluation --------------------------------------------------------- */
 
 /* Evaluates `src` (UTF-8, `len` bytes, may contain NUL) in the global scope.
