@@ -13,3 +13,5 @@ option('build_timestamp', type: 'string', value: '', description: 'build timesta
 option('build_git_hash', type: 'string', value: '', description: 'git hash for version metadata (defaults to git rev-parse if empty)')
 option('deps_prefix_cmake', type: 'string', value: '', description: 'prefix path for finding dependencies in cmake subprojects')
 option('llvm_nm', type: 'string', value: 'llvm-nm', description: 'LLVM nm executable used to inspect Darwin LTO archives')
+
+option('antjsb', type: 'boolean', value: true, description: 'build the antjsb embedding bridge DLL (Windows)')

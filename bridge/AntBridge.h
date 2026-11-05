@@ -28,6 +28,11 @@ extern "C" {
 typedef struct AntbEngine AntbEngine;   /* one Ant isolate (= one JS global context) */
 typedef struct AntbValue  AntbValue;    /* a handle to a JS value or object          */
 
+/* Optional diagnostic sink. The bridge has no dependency on the embedder's
+ * logger; the host installs one after loading the DLL. */
+typedef void (*AntbLogFn)(const char* line, void* user);
+AGB_API void antb_set_logger(AntbLogFn fn, void* user);
+
 /* Native method callback.
  *   self  - the `this` value (usually the object the method was read from)
  *   args  - argument array (may be NULL when argc == 0)
@@ -111,6 +116,9 @@ AGB_API AntbValue* antb_make_string(AntbEngine* engine, const char* utf8);
 
 /* Creates a JS number. */
 AGB_API AntbValue* antb_make_number(AntbEngine* engine, double v);
+
+/* Creates the JS null value (history.state is null, not undefined). */
+AGB_API AntbValue* antb_make_null(AntbEngine* engine);
 
 /* Creates an empty array; antb_array_push appends to it. */
 AGB_API AntbValue* antb_make_array(AntbEngine* engine);

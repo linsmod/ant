@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <stdarg.h>
 
 #include "ant.h"
 #include "esm/loader.h"
@@ -19,6 +20,32 @@
 #include "ptr.h"        /* js_set_native / js_get_native (static inline) */
 #include "gc/roots.h"   /* gc_register_root: keep wrapper objects alive */
 #include "gc.h"         /* gc_run: forced collection in tests */
+
+/* Optional host-provided diagnostics. The bridge must not include the
+ * embedder's logging header: antjsb is built inside the ant tree. */
+static AntbLogFn g_logger = NULL;
+static void*     g_loggerUser = NULL;
+
+void antb_set_logger(AntbLogFn fn, void* user)
+{
+    g_logger = fn;
+    g_loggerUser = user;
+}
+
+static void antbLog(const char* fmt, ...)
+{
+    char line[512];
+    va_list ap;
+
+    va_start(ap, fmt);
+    vsnprintf(line, sizeof(line), fmt, ap);
+    va_end(ap);
+
+    if (g_logger)
+        g_logger(line, g_loggerUser);
+    else
+        fprintf(stderr, "%s\n", line);
+}
 
 struct AntbFilename {
     struct AntbFilename* next;
@@ -264,7 +291,7 @@ void antb_set_uncaught_nonfatal(AntbEngine* engine, int on)
 {
     if (engine && engine->js) {
         engine->js->uncaught_nonfatal = on ? true : false;
-        fprintf(stderr, "[flag] set js=%p on=%d -> %d\n", (void*)engine->js, on, (int)engine->js->uncaught_nonfatal);
+        antbLog("set js=%p on=%d -> %d", (void*)engine->js, on, (int)engine->js->uncaught_nonfatal);
     }
 }
 
@@ -382,6 +409,17 @@ AntbValue* antb_make_string(AntbEngine* engine, const char* utf8)
     if (!engine || !engine->js || !utf8)
         return NULL;
     return alloc_value(engine->js, js_mkstr(engine->js, utf8, strlen(utf8)));
+}
+
+AntbValue* antb_make_null(AntbEngine* engine)
+{
+    AntbValue* out;
+
+    if (!engine || !engine->js)
+        return NULL;
+
+    out = alloc_value(engine->js, js_mknull());
+    return out;
 }
 
 AntbValue* antb_make_number(AntbEngine* engine, double v)

@@ -141,6 +141,22 @@ if host_machine.system() == 'linux'
   ant_link_depends += files('meson/ant.dynlist')
 endif
 
+# antjsb: the embedding bridge used by agave. The bridge is just another
+# source in the ant tree; this target packages it as a DLL for libagave.
+if host_machine.system() == 'windows' and get_option('antjsb')
+  antjsb = shared_library(
+    'antjsb',
+    'bridge/AntBridge.c',
+    include_directories: [include, include_directories('bridge')],
+    link_with: libant,
+    dependencies: ant_deps + temporal_link_deps,
+    c_args: ['-std=gnu23', '-DAGB_BUILD_DLL', '-O2', '-g'],
+    link_args: ['-Wl,--stack,134217728', '-g'],
+    name_prefix: '',
+    install: true,
+  )
+endif
+
 ant_exe = executable(
   'ant',
   files('src/main.c') + [messages_h],
