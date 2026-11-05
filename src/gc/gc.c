@@ -377,6 +377,7 @@ static void gc_stats_dump(void) {
 static void gc_stats_note(int major) {
   if (gc_stats_hook < 0) {
     gc_stats_hook = getenv("AGB_GC_DEBUG") ? 1 : 0;
+    if (getenv("AGB_GC_OFF")) gc_disabled = true;   /* diagnostic: no collection */
     if (gc_stats_hook) atexit(gc_stats_dump);
   }
   if (!gc_stats_hook) return;
