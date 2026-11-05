@@ -28,6 +28,10 @@
 static AntbLogFn g_logger = NULL;
 static void*     g_loggerUser = NULL;
 
+/* Most recently created engine: only used by the crash path, where the host
+ * has no engine handle anymore (antb_print_last_js_stack). */
+static AntbEngine* g_lastEngine = NULL;
+
 void antb_set_logger(AntbLogFn fn, void* user)
 {
     g_logger = fn;
@@ -161,6 +165,7 @@ AntbEngine* antb_engine_create(const void* stack_anchor)
         if (jd && jd[0] && strcmp(jd, "0") != 0) sv_debug_enable(SV_DEBUG_JIT_WARN);
     }
 
+    g_lastEngine = e;
     return e;
 }
 
@@ -168,6 +173,9 @@ void antb_engine_destroy(AntbEngine* engine)
 {
     if (!engine)
         return;
+
+    if (g_lastEngine == engine)
+        g_lastEngine = NULL;
 
     /* The wrapper and class tables are process wide. An engine that goes away
      * must take its entries with it: a stale js pointer, a wrapper that is
@@ -345,6 +353,14 @@ void antb_print_js_stack(AntbEngine* engine)
 
     js_print_stack_trace_vm(engine->js, stderr);
     fflush(stderr);
+}
+
+/* Crash path: the host only has a faulting stack but no engine handle, so use
+ * the most recently created engine. Best-effort - a fault inside the VM walk
+ * just means the native stack already on file is all we get. */
+void antb_print_last_js_stack(void)
+{
+    antb_print_js_stack(g_lastEngine);
 }
 
 void antb_set_uncaught_nonfatal(AntbEngine* engine, int on)
