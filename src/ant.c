@@ -10137,30 +10137,45 @@ static iter_action_t group_by_step(ant_t *js, ant_value_t value, void *ctx, ant_
 
 ant_value_t js_group_by(ant_t *js, ant_value_t items, ant_value_t callback, js_group_add_fn add, void *ctx) {
   if (!is_callable(callback)) return js_mkerr_typed(js, JS_ERR_TYPE, "callback is not a function");
+
+  /* The callback and the items are held across JS calls; root both, because
+   * arguments may arrive through the JIT alloca buffer (R63). */
+  gc_temp_root_scope_t roots;
+  gc_temp_root_scope_begin(js, &roots);
+  gc_temp_root_push(&roots, items);
+  gc_temp_root_push(&roots, callback);
+
   group_by_ctx_t group_by = { sv_callback_prepare(js, callback, js_mkundef()), add, ctx, 0 };
+  ant_value_t result = js_mkundef();
 
   if (array_obj_ptr(items) && js_array_iteration_default(js, items)) {
     ant_offset_t len = 0;
     ant_value_t len_result = array_like_length_checked(js, items, &len);
-    if (is_err(len_result)) return len_result;
+    if (is_err(len_result)) { result = len_result; goto done; }
     
     for (ant_offset_t i = 0; i < len; i++) {
       ant_value_t value = array_method_get_index(js, items, i);
-      if (is_err(value)) return value;
+      if (is_err(value)) { result = value; goto done; }
       ant_value_t err = js_mkundef();
-      if (group_by_step(js, value, &group_by, &err) == ITER_ERROR) return err;
+      if (group_by_step(js, value, &group_by, &err) == ITER_ERROR) { result = err; goto done; }
       len_result = array_like_length_checked(js, items, &len);
-      if (is_err(len_result)) return len_result;
+      if (is_err(len_result)) { result = len_result; goto done; }
     }
     
-    return js_mkundef();
+    goto done;
   }
 
-  if (vtype(js->sym.iterator_sym) != kTypeSymbol || !is_callable(js_get_sym(js, items, js->sym.iterator_sym)))
-    return js_mkerr_typed(js, JS_ERR_TYPE, "object is not iterable");
+  if (vtype(js->sym.iterator_sym) != kTypeSymbol || !is_callable(js_get_sym(js, items, js->sym.iterator_sym))) {
+    result = js_mkerr_typed(js, JS_ERR_TYPE, "object is not iterable");
+    goto done;
+  }
   
   ant_value_t iterated = iter_foreach(js, items, group_by_step, &group_by);
-  return is_err(iterated) ? iterated : js_mkundef();
+  result = is_err(iterated) ? iterated : js_mkundef();
+
+done:
+  gc_temp_root_scope_end(&roots);
+  return result;
 }
 
 static ant_value_t object_group_add(ant_t *js, void *ctx, ant_value_t key, ant_value_t value) {
@@ -13965,17 +13980,23 @@ static ant_value_t builtin_array_every(ant_params_t) {
   sv_callback_t cb = sv_callback_prepare(js, callback, this_arg);
   ant_object_t *elems = array_method_elements(arr);
   
+  gc_temp_root_scope_t roots;
+  gc_temp_root_scope_begin(js, &roots);
+  gc_temp_root_push(&roots, arr);
+  gc_temp_root_push(&roots, callback);
+  
   for (ant_offset_t i = 0; i < len; i++) {
     ant_value_t val;
     ant_value_t has = array_method_element(js, arr, elems, i, &val);
-    if (is_err(has)) return has;
+    if (is_err(has)) { gc_temp_root_scope_end(&roots); return has; }
     if (has != js_true) continue;
     ant_value_t call_args[3] = { val, tov((double)i), arr };
     ant_value_t result = sv_callback_call(js->vm, js, &cb, call_args, 3);
-    if (is_err(result)) return result;
-    if (!js_truthy(js, result)) return mkval(kTypeBool, 0);
+    if (is_err(result)) { gc_temp_root_scope_end(&roots); return result; }
+    if (!js_truthy(js, result)) { gc_temp_root_scope_end(&roots); return mkval(kTypeBool, 0); }
   }
   
+  gc_temp_root_scope_end(&roots);
   return mkval(kTypeBool, 1);
 }
 
@@ -13993,16 +14014,22 @@ static ant_value_t builtin_array_forEach(ant_params_t) {
   sv_callback_t cb = sv_callback_prepare(js, callback, this_arg);
   ant_object_t *elems = array_method_elements(arr);
   
+  gc_temp_root_scope_t roots;
+  gc_temp_root_scope_begin(js, &roots);
+  gc_temp_root_push(&roots, arr);
+  gc_temp_root_push(&roots, callback);
+  
   for (ant_offset_t i = 0; i < len; i++) {
     ant_value_t val;
     ant_value_t has = array_method_element(js, arr, elems, i, &val);
-    if (is_err(has)) return has;
+    if (is_err(has)) { gc_temp_root_scope_end(&roots); return has; }
     if (has != js_true) continue;
     ant_value_t call_args[3] = { val, tov((double)i), arr };
     ant_value_t result = sv_callback_call(js->vm, js, &cb, call_args, 3);
-    if (is_err(result)) return result;
+    if (is_err(result)) { gc_temp_root_scope_end(&roots); return result; }
   }
   
+  gc_temp_root_scope_end(&roots);
   return js_mkundef();
 }
 
@@ -14108,19 +14135,38 @@ static ant_value_t builtin_array_map(ant_params_t) {
   if (is_err(result)) return result;
   bool skipped = false;
   
+  /* The receiver, the callback and the result must survive the JS calls in
+   * the loop: a builtin's arguments may live in the JIT's alloca buffer,
+   * which the GC does not scan, so a collection inside the callback used to
+   * free the very function being iterated with (R63). */
+  gc_temp_root_scope_t roots;
+  gc_temp_root_scope_begin(js, &roots);
+  gc_temp_root_push(&roots, arr);
+  gc_temp_root_push(&roots, callback);
+  gc_temp_root_push(&roots, result);
+  
   for (ant_offset_t i = 0; i < len; i++) {
     ant_value_t val;
     ant_value_t has = array_method_element(js, arr, elems, i, &val);
-    if (is_err(has)) return has;
+    if (is_err(has)) { result = has; goto done; }
     if (has != js_true) { skipped = true; continue; }
     ant_value_t call_args[3] = { val, tov((double)i), arr };
     ant_value_t mapped = sv_callback_call(js->vm, js, &cb, call_args, 3);
-    if (is_err(mapped)) return mapped;
+    if (is_err(mapped)) { result = mapped; goto done; }
+    
+    /* The mapped value is only reachable from this frame until it lands in
+     * the result array. */
+    gc_temp_root_scope_t iter;
+    gc_temp_root_scope_begin(js, &iter);
+    gc_temp_root_push(&iter, mapped);
     ant_value_t set = array_result_set(js, result, intrinsic, i, mapped);
-    if (is_err(set)) return set;
+    gc_temp_root_scope_end(&iter);
+    if (is_err(set)) { result = set; goto done; }
   }
   
   if (intrinsic && !skipped) array_mark_packed(result);
+done:
+  gc_temp_root_scope_end(&roots);
   return result;
 }
 
@@ -14144,20 +14190,35 @@ static ant_value_t builtin_array_filter(ant_params_t) {
   
   ant_offset_t result_idx = 0;
   
+  /* See builtin_array_map: arguments may live in the JIT alloca buffer, so
+   * `callback`/`arr`/`result` are only safe while explicitly rooted (R63). */
+  gc_temp_root_scope_t roots;
+  gc_temp_root_scope_begin(js, &roots);
+  gc_temp_root_push(&roots, arr);
+  gc_temp_root_push(&roots, callback);
+  gc_temp_root_push(&roots, result);
+  
   for (ant_offset_t i = 0; i < len; i++) {
     ant_value_t val;
     ant_value_t has = array_method_element(js, arr, elems, i, &val);
-    if (is_err(has)) return has;
+    if (is_err(has)) { result = has; goto done; }
     if (has != js_true) continue;
     ant_value_t call_args[3] = { val, tov((double)i), arr };
     ant_value_t test = sv_callback_call(js->vm, js, &cb, call_args, 3);
     
-    if (is_err(test)) return test;
+    if (is_err(test)) { result = test; goto done; }
     if (!js_truthy(js, test)) continue;
+    
+    gc_temp_root_scope_t iter;
+    gc_temp_root_scope_begin(js, &iter);
+    gc_temp_root_push(&iter, val);
     ant_value_t set = array_result_set(js, result, intrinsic, result_idx++, val);
-    if (is_err(set)) return set;
+    gc_temp_root_scope_end(&iter);
+    if (is_err(set)) { result = set; goto done; }
   }
   
+done:
+  gc_temp_root_scope_end(&roots);
   return result;
 }
 
@@ -14177,20 +14238,35 @@ static ant_value_t builtin_array_reduce(ant_params_t) {
   
   ant_value_t accumulator = has_initial ? args[1] : js_mkundef();
   bool first = !has_initial;
+  ant_value_t err = js_mkundef();
+  
+  /* `callback`, the receiver and the running accumulator all outlive JS calls
+   * below; root them explicitly (R63). */
+  gc_temp_root_scope_t roots;
+  gc_temp_root_scope_begin(js, &roots);
+  gc_temp_root_push(&roots, arr);
+  gc_temp_root_push(&roots, callback);
+  gc_temp_root_push(&roots, accumulator);
   
   for (ant_offset_t i = 0; i < len; i++) {
     ant_value_t val;
     ant_value_t has = array_method_element(js, arr, elems, i, &val);
-    if (is_err(has)) return has;
+    if (is_err(has)) { err = has; goto done; }
     if (has != js_true) continue;
-    if (first) { accumulator = val; first = false; continue; }
+    if (first) { accumulator = val; first = false; gc_temp_root_push(&roots, accumulator); continue; }
     ant_value_t call_args[4] = { accumulator, val, tov((double)i), arr };
     accumulator = sv_callback_call(js->vm, js, &cb, call_args, 4);
-    if (is_err(accumulator)) return accumulator;
+    if (is_err(accumulator)) { err = accumulator; goto done; }
+    /* The scope keeps the newest accumulator alive for the next iteration. */
+    gc_temp_root_push(&roots, accumulator);
   }
   
+  gc_temp_root_scope_end(&roots);
   if (first) return js_mkerr(js, "reduce of empty array with no initial value");
   return accumulator;
+done:
+  gc_temp_root_scope_end(&roots);
+  return err;
 }
 
 static inline ant_value_t *packed_array_data_for_length(ant_t *js, ant_value_t arr, ant_offset_t len) {
@@ -14466,17 +14542,26 @@ static ant_value_t array_find_impl(ant_native_params_t, bool return_index, const
   sv_callback_t cb = sv_callback_prepare(js, callback, this_arg);
   if (len == 0) return return_index ? tov(-1) : js_mkundef();
   
+  gc_temp_root_scope_t roots;
+  gc_temp_root_scope_begin(js, &roots);
+  gc_temp_root_push(&roots, arr);
+  gc_temp_root_push(&roots, callback);
+  
   for (ant_offset_t i = 0; i < len; i++) {
     ant_value_t val = array_method_get_index(js, arr, i);
-    if (is_err(val)) return val;
+    if (is_err(val)) { gc_temp_root_scope_end(&roots); return val; }
     
     ant_value_t call_args[3] = { val, tov((double)i), arr };
     ant_value_t result = sv_callback_call(js->vm, js, &cb, call_args, 3);
     
-    if (is_err(result)) return result;
-    if (js_truthy(js, result)) return return_index ? tov((double)i) : val;
+    if (is_err(result)) { gc_temp_root_scope_end(&roots); return result; }
+    if (js_truthy(js, result)) {
+      gc_temp_root_scope_end(&roots);
+      return return_index ? tov((double)i) : val;
+    }
   }
   
+  gc_temp_root_scope_end(&roots);
   return return_index ? tov(-1) : js_mkundef();
 }
 
@@ -14500,17 +14585,26 @@ static ant_value_t array_find_last_impl(ant_native_params_t, bool return_index, 
   sv_callback_t cb = sv_callback_prepare(js, callback, this_arg);
   if (len == 0) return return_index ? tov(-1) : js_mkundef();
   
+  gc_temp_root_scope_t roots;
+  gc_temp_root_scope_begin(js, &roots);
+  gc_temp_root_push(&roots, arr);
+  gc_temp_root_push(&roots, callback);
+  
   for (ant_offset_t i = len; i > 0; i--) {
     ant_value_t val = array_method_get_index(js, arr, i - 1);
-    if (is_err(val)) return val;
+    if (is_err(val)) { gc_temp_root_scope_end(&roots); return val; }
     
     ant_value_t call_args[3] = { val, tov((double)(i - 1)), arr };
     ant_value_t result = sv_callback_call(js->vm, js, &cb, call_args, 3);
     
-    if (is_err(result)) return result;
-    if (js_truthy(js, result)) return return_index ? tov((double)(i - 1)) : val;
+    if (is_err(result)) { gc_temp_root_scope_end(&roots); return result; }
+    if (js_truthy(js, result)) {
+      gc_temp_root_scope_end(&roots);
+      return return_index ? tov((double)(i - 1)) : val;
+    }
   }
   
+  gc_temp_root_scope_end(&roots);
   return return_index ? tov(-1) : js_mkundef();
 }
 
@@ -14544,18 +14638,31 @@ static ant_value_t builtin_array_flatMap(ant_params_t) {
   sv_callback_t cb = sv_callback_prepare(js, callback, this_arg);
   ant_object_t *elems = array_method_elements(arr);
 
+  gc_temp_root_scope_t roots;
+  gc_temp_root_scope_begin(js, &roots);
+  gc_temp_root_push(&roots, arr);
+  gc_temp_root_push(&roots, callback);
+  gc_temp_root_push(&roots, result);
+
   for (ant_offset_t i = 0; i < len; i++) {
     ant_value_t elem;
     ant_value_t has = array_method_element(js, arr, elems, i, &elem);
-    if (is_err(has)) return has;
+    if (is_err(has)) { result = has; goto done; }
     if (has != js_true) continue;
     ant_value_t call_args[3] = { elem, tov((double)i), arr };
     ant_value_t mapped = sv_callback_call(js->vm, js, &cb, call_args, 3);
-    if (is_err(mapped)) return mapped;
+    if (is_err(mapped)) { result = mapped; goto done; }
+    
+    gc_temp_root_scope_t iter;
+    gc_temp_root_scope_begin(js, &iter);
+    gc_temp_root_push(&iter, mapped);
     ant_value_t flat_res = flat_append_mapped_value(js, mapped, result, intrinsic, &result_idx);
-    if (is_err(flat_res)) return flat_res;
+    gc_temp_root_scope_end(&iter);
+    if (is_err(flat_res)) { result = flat_res; goto done; }
   }
   
+done:
+  gc_temp_root_scope_end(&roots);
   return result;
 }
 
@@ -14841,19 +14948,25 @@ static ant_value_t builtin_array_some(ant_params_t) {
   ant_object_t *elems = array_method_elements(arr);
   if (len == 0) return mkval(kTypeBool, 0);
   
+  gc_temp_root_scope_t roots;
+  gc_temp_root_scope_begin(js, &roots);
+  gc_temp_root_push(&roots, arr);
+  gc_temp_root_push(&roots, callback);
+  
   for (ant_offset_t i = 0; i < len; i++) {
     ant_value_t val;
     ant_value_t has = array_method_element(js, arr, elems, i, &val);
-    if (is_err(has)) return has;
+    if (is_err(has)) { gc_temp_root_scope_end(&roots); return has; }
     if (has != js_true) continue;
     
     ant_value_t call_args[3] = { val, tov((double)i), arr };
     ant_value_t result = sv_callback_call(js->vm, js, &cb, call_args, 3);
     
-    if (is_err(result)) return result;
-    if (js_truthy(js, result)) return mkval(kTypeBool, 1);
+    if (is_err(result)) { gc_temp_root_scope_end(&roots); return result; }
+    if (js_truthy(js, result)) { gc_temp_root_scope_end(&roots); return mkval(kTypeBool, 1); }
   }
   
+  gc_temp_root_scope_end(&roots);
   return mkval(kTypeBool, 0);
 }
 
@@ -15833,7 +15946,7 @@ static iter_action_t array_from_iter_cb(ant_t *js, ant_value_t value, void *ctx,
 }
 
 // TODO: modularize
-static ant_value_t builtin_Array_from(ant_params_t) {
+static ant_value_t array_from_impl(ant_params_t) {
   if (nargs == 0) return mkarr(js);
 
   ant_value_t src = args[0];
@@ -15935,6 +16048,22 @@ static ant_value_t builtin_Array_from(ant_params_t) {
   }
 
   if (!use_ctor) return mkval(kTypeArray, vdata(result));
+  return result;
+}
+
+/* Array.from(src, mapFn) calls mapFn once per element; src/mapFn/ctor are
+ * brought in through the JIT's alloca args buffer, which the GC does not scan,
+ * so they are rooted here for the whole conversion (R63). */
+static ant_value_t builtin_Array_from(ant_params_t) {
+  gc_temp_root_scope_t roots;
+  gc_temp_root_scope_begin(js, &roots);
+  gc_temp_root_push(&roots, js->this_val);
+  for (int i = 0; i < nargs && i < 3; i++)
+    gc_temp_root_push(&roots, args[i]);
+
+  ant_value_t result = array_from_impl(js, args, nargs, call_new_target);
+
+  gc_temp_root_scope_end(&roots);
   return result;
 }
 

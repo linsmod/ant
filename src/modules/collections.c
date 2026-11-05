@@ -1105,6 +1105,13 @@ static ant_value_t map_forEach(ant_params_t) {
   
   sv_callback_t cb = sv_callback_prepare(js, args[0], nargs > 1 ? args[1] : js_mkundef());
   
+  /* args may live in the JIT's alloca buffer, which the GC does not scan:
+   * keep the callback (and the receiver) alive across the loop (R63). */
+  gc_temp_root_scope_t roots;
+  gc_temp_root_scope_begin(js, &roots);
+  gc_temp_root_push(&roots, args[0]);
+  gc_temp_root_push(&roots, this_val);
+  
   map_iterator_state_t it;
   collections_map_iter_open(&it, map_ptr, ITER_TYPE_MAP_ENTRIES);
   ant_value_t result = js_mkundef();
@@ -1116,6 +1123,7 @@ static ant_value_t map_forEach(ant_params_t) {
   }
   
   collections_map_iter_close(&it);
+  gc_temp_root_scope_end(&roots);
   return is_err(result) ? result : js_mkundef();
 }
 
@@ -1276,6 +1284,12 @@ static ant_value_t set_forEach(ant_params_t) {
   
   sv_callback_t cb = sv_callback_prepare(js, args[0], nargs > 1 ? args[1] : js_mkundef());
   
+  /* Same as map_forEach: the callback must survive the loop (R63). */
+  gc_temp_root_scope_t roots;
+  gc_temp_root_scope_begin(js, &roots);
+  gc_temp_root_push(&roots, args[0]);
+  gc_temp_root_push(&roots, this_val);
+  
   set_iterator_state_t it;
   collections_set_iter_open(&it, set_ptr, ITER_TYPE_SET_VALUES);
   ant_value_t result = js_mkundef();
@@ -1287,6 +1301,7 @@ static ant_value_t set_forEach(ant_params_t) {
   }
   
   collections_set_iter_close(&it);
+  gc_temp_root_scope_end(&roots);
   return is_err(result) ? result : js_mkundef();
 }
 
