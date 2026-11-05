@@ -21549,6 +21549,11 @@ void js_destroy(ant_t *js) {
   js->permanent_root_cap = 0;
   js->permanent_root_traced = 0;
 
+  free(js->permanent_values);
+  js->permanent_values = NULL;
+  js->permanent_value_len = 0;
+  js->permanent_value_cap = 0;
+
   free(js->remembered_upvalues);
   js->remembered_upvalues = NULL;
   js->remembered_upvalue_len = js->remembered_upvalue_cap = 0;

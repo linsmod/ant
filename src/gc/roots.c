@@ -25,10 +25,31 @@ bool gc_push_root(ant_t *js, ant_value_t *slot) {
   return true;
 }
 
+/* Closures are not ant_object_t: they live in the closure arena and are swept
+ * by mark epoch, so they need their own permanent list (and their function
+ * object, which gc_mark_closure() reaches, is kept alive with them). */
+static bool gc_pin_permanent_closure(ant_t *js, ant_value_t value) {
+  for (size_t i = 0; i < js->permanent_value_len; i++)
+    if (js->permanent_values[i] == value) return true;
+
+  if (js->permanent_value_len >= js->permanent_value_cap) {
+    size_t new_cap = js->permanent_value_cap ? js->permanent_value_cap * 2 : 64;
+    ant_value_t *next = realloc(js->permanent_values, new_cap * sizeof(*next));
+    if (!next) return false;
+
+    js->permanent_values = next;
+    js->permanent_value_cap = new_cap;
+  }
+
+  js->permanent_values[js->permanent_value_len++] = value;
+  return true;
+}
+
 bool gc_pin_permanent(ant_t *js, ant_value_t value) {
   if (!js || !is_tagged(value)) return false;
 
   uint8_t type = vtype_tagged(value);
+  if (type == kTypeFunction) return gc_pin_permanent_closure(js, value);
   if (((1u << type) & GC_OBJ_TYPE_MASK) == 0) return false;
   if (type == kTypeError && vdata(value) < 2) return false;
 

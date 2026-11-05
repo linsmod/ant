@@ -486,6 +486,14 @@ struct ant_isolate_t {
   size_t permanent_root_cap;
   size_t permanent_root_traced;
 
+  /* Pinned values that are not objects: JS closures (kTypeFunction). They
+   * cannot ride permanent_roots (that list holds ant_object_t and is protected
+   * by the gc_permanent flag); closures are swept by mark epoch, so every one
+   * of these is re-marked on every collection. */
+  ant_value_t *permanent_values;
+  size_t permanent_value_len;
+  size_t permanent_value_cap;
+
   sv_code_units_t code_units;
 
   struct {

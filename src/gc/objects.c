@@ -1168,6 +1168,11 @@ static void gc_mark_permanent_roots(ant_t *js) {
   size_t start = js->gc.minor ? js->permanent_root_traced : 0;
   for (size_t i = start; i < js->permanent_root_len; i++)
     gc_grey_obj(js, js->permanent_roots[i]);
+
+  /* Pinned closures: re-marked on every collection (minor included) because
+   * the closure arena sweep is epoch based and has no gc_permanent flag. */
+  for (size_t i = 0; i < js->permanent_value_len; i++)
+    gc_mark_value(js, js->permanent_values[i]);
 }
 
 static void gc_grey_pending_promises(ant_t *js, ant_object_t *head) {
