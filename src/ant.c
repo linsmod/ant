@@ -22617,7 +22617,13 @@ static inline js_eval_result_t js_eval_bytecode_mode_result(
       break;
     case SV_COMPILE_SCRIPT:
     default:
-      value = js_execute_compiled_bytecode(js, func, NULL);
+      /* Classic <script> semantics: top-level var/function declarations are
+       * properties of the global object (the REPL entry has always done this
+       * through sv_global_declare). */
+      {
+        ant_value_t declared = sv_global_declare(js, func);
+        value = is_err(declared) ? declared : js_execute_compiled_bytecode(js, func, NULL);
+      }
       break;
   }
 

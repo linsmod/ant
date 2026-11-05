@@ -803,6 +803,19 @@ static inline bool is_repl_top_level(const sv_compiler_t *c) {
   return is_repl_root(c) && c->scope_depth == 0;
 }
 
+/* The top-level scope of a classic <script>. Like a browser, its var/function
+ * declarations belong to the global object, not to a program-scope local: a
+ * later script (or any nested function) reads them through the global property
+ * inline caches. `let`/`const` stay lexical. */
+static inline bool is_program_root(const sv_compiler_t *c) {
+  return c && c->mode == SV_COMPILE_SCRIPT &&
+         c->enclosing && !c->enclosing->enclosing;
+}
+
+static inline bool is_program_top_level(const sv_compiler_t *c) {
+  return is_program_root(c) && c->scope_depth == 0;
+}
+
 static inline bool has_completion_value(const sv_compiler_t *c) {
   return c && (sv_compile_mode_is_eval(c->mode) || c->mode == SV_COMPILE_REPL);
 }
@@ -2518,6 +2531,10 @@ static void hoist_var_pattern(sv_compiler_t *c, sv_ast_t *pat) {
   switch (pat->type) {
     case N_IDENT:
       if (is_sloppy_eval(c)) { add_eval_var(c, pat->str, pat->len, false); break; }
+      /* A script's top-level var is a global-object property (see
+       * is_program_top_level). add_eval_var records the name so
+       * sv_global_declare() creates the property before the script runs. */
+      if (is_program_top_level(c)) { add_eval_var(c, pat->str, pat->len, false); break; }
       if (resolve_local(c, pat->str, pat->len) == -1)
         add_local(c, pat->str, pat->len, false, 0);
       break;
@@ -2822,7 +2839,7 @@ static void hoist_lexical_decls(sv_compiler_t *c, sv_ast_list_t *stmts) {
           mark_export_binding(c, decl_node->str, decl_node->len);
       }
     } else if (decl_node->type == N_FUNC && decl_node->str && !(decl_node->flags & (FN_ARROW | FN_PAREN))) {
-      if (is_sloppy_eval(c) && c->scope_depth == 0)
+      if ((is_sloppy_eval(c) || is_program_top_level(c)) && c->scope_depth == 0)
         add_eval_var(c, decl_node->str, decl_node->len, false);
       else {
         int local = ensure_local_at_depth(c, decl_node->str, decl_node->len, false, c->scope_depth);
@@ -2840,7 +2857,8 @@ static void hoist_lexical_decls(sv_compiler_t *c, sv_ast_list_t *stmts) {
       annex_b_collect_funcs(c->js, decl_node, &funcs);
       for (int j = 0; j < funcs.count; j++) {
         sv_ast_t *fn = funcs.items[j];
-        if (is_sloppy_eval(c) && c->scope_depth == 0) add_eval_var(c, fn->str, fn->len, true);
+        if ((is_sloppy_eval(c) || is_program_top_level(c)) && c->scope_depth == 0)
+          add_eval_var(c, fn->str, fn->len, true);
         else if (resolve_local(c, fn->str, fn->len) == -1)
           add_local(c, fn->str, fn->len, false, c->scope_depth);
       }
@@ -2850,7 +2868,7 @@ static void hoist_lexical_decls(sv_compiler_t *c, sv_ast_list_t *stmts) {
       annex_b_collect_block_var_funcs(c->js, decl_node, &funcs);
       for (int j = 0; j < funcs.count; j++) {
         sv_ast_t *fn = funcs.items[j];
-        if (is_sloppy_eval(c)) add_eval_var(c, fn->str, fn->len, true);
+        if (is_sloppy_eval(c) || is_program_top_level(c)) add_eval_var(c, fn->str, fn->len, true);
         else if (resolve_local_at_depth(c, fn->str, fn->len, 0) == -1)
           add_local(c, fn->str, fn->len, false, 0);
       }
@@ -2917,20 +2935,31 @@ static void hoist_one_func(sv_compiler_t *c, sv_ast_t *node, bool annex_b_update
   int idx = add_constant(c, mkref(kTypeFunctionInfo, fn));
   emit_closure(c, idx);
   emit_set_function_name(c, node->str, node->len);
-  int annex_var = annex_b_update_var && !is_sloppy_eval(c) ? resolve_local_at_depth(c, node->str, node->len, 0) : -1;
+  int annex_var = annex_b_update_var && !is_sloppy_eval(c) && !is_program_root(c)
+    ? resolve_local_at_depth(c, node->str, node->len, 0) : -1;
   if (annex_var >= 0 && (c->locals[annex_var].eval_flags & SV_EVAL_BIND_LEXICAL)) annex_var = -1;
   bool eval_annex_var = false;
-  if (annex_b_update_var && is_sloppy_eval(c))
+  /* Annex B: a block-level function declaration in sloppy code also creates a
+   * var-scoped binding. For a top-level script that binding is the global
+   * property (the try{} wrapper agave puts around page scripts relies on it). */
+  bool program_annex_var = false;
+  if (annex_b_update_var && (is_sloppy_eval(c) || is_program_root(c)))
     for (uint32_t i = 0; i < c->eval_var_count; i++)
-      if (c->eval_vars[i].len == node->len && !memcmp(c->eval_vars[i].str, node->str, node->len))
-        eval_annex_var = true;
-  if (annex_var >= 0 || eval_annex_var) emit_op(c, OP_DUP);
-  if (is_sloppy_eval(c) && c->scope_depth == 0) {
+      if (c->eval_vars[i].len == node->len && !memcmp(c->eval_vars[i].str, node->str, node->len)) {
+        if (is_program_root(c)) program_annex_var = true;
+        else eval_annex_var = true;
+      }
+  if (annex_var >= 0 || eval_annex_var || program_annex_var) emit_op(c, OP_DUP);
+  if ((is_sloppy_eval(c) || is_program_top_level(c)) && c->scope_depth == 0) {
     bool declared = false;
     for (uint32_t i = 0; i < c->eval_var_count; i++)
       if (c->eval_vars[i].len == node->len && !memcmp(c->eval_vars[i].str, node->str, node->len))
         declared = true;
-    if (declared) emit_atom_op(c, OP_PUT_EVAL_FUNCTION, node->str, node->len);
+    /* A script's top-level function is a global property; the eval path stores
+     * into its variable environment (which resolves to the global as well). */
+    if (declared && is_program_top_level(c))
+      emit_atom_op(c, OP_PUT_GLOBAL, node->str, node->len);
+    else if (declared) emit_atom_op(c, OP_PUT_EVAL_FUNCTION, node->str, node->len);
     else emit_op(c, OP_POP);
   } else {
     int local = resolve_local(c, node->str, node->len);
@@ -2938,6 +2967,7 @@ static void hoist_one_func(sv_compiler_t *c, sv_ast_t *node, bool annex_b_update
   }
   if (annex_var >= 0) emit_put_local(c, annex_var);
   if (eval_annex_var) emit_atom_op(c, OP_PUT_EVAL_FUNCTION, node->str, node->len);
+  if (program_annex_var) emit_atom_op(c, OP_PUT_GLOBAL, node->str, node->len);
 }
 
 static void hoist_func_decls(sv_compiler_t *c, sv_ast_list_t *stmts) {

@@ -1705,7 +1705,18 @@ static ant_value_t jit_put_elem(ant_t *js, ant_value_t obj, ant_value_t key, ant
     return js_setprop_index(js, obj, (uint32_t)index, val);
   }
   ant_value_t key_jv = sv_key_to_propstr(js, key);
-  return js_setprop_keyed(js, obj, key_jv, val);
+
+  /* `key_jv` may be a freshly converted string that only this frame refers to;
+   * setprop walks the shape chain and can collect, which used to free the key
+   * under hash_key (v.qq.com, strict obj[key]=v, R66). */
+  GC_ROOT_SAVE(root_mark, js);
+  GC_ROOT_PIN(js, obj);
+  GC_ROOT_PIN(js, key);
+  GC_ROOT_PIN(js, val);
+  GC_ROOT_PIN(js, key_jv);
+  ant_value_t result = js_setprop_keyed(js, obj, key_jv, val);
+  GC_ROOT_RESTORE(js, root_mark);
+  return result;
 }
 
 ant_value_t jit_helper_put_elem(
