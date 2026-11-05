@@ -256,10 +256,31 @@ AntbValue* antb_eval_module(AntbEngine* engine, const char* src, int len,
             engine->filenames = node;
             js_set_filename(engine->js, node->text);
         }
-        js_setup_import_meta(engine->js, filename);
     }
 
-    v = js_eval_bytecode_module(engine->js, src, (size_t)len);
+    /* Raw js_eval_bytecode_module() compiles in module mode but runs without a
+     * module record: top-level `export` then dies with "export used outside
+     * module", and import.meta/dynamic import have no owner. This is the entry
+     * path ant's CLI uses: it creates the eval context, the module namespace and
+     * import.meta, and resolves imports through the fetcher. */
+    {
+        ant_value_t ns = Ant_Object_CreateBare(engine->js);
+
+        if (is_err(ns)) {
+            copy_cstr(engine, "module evaluation failed", ns);
+            if (err) {
+                *err = (char*)malloc(strlen(engine->err) + 1);
+                if (*err)
+                    strcpy(*err, engine->err);
+            }
+            return NULL;
+        }
+
+        v = js_esm_eval_module_source(
+            engine->js,
+            (filename && filename[0]) ? filename : "agave://module",
+            src, (size_t)len, ns);
+    }
 
     if (is_err(v)) {
         ant_value_t thrown = js_take_thrown(engine->js, v);

@@ -140,10 +140,14 @@ bool print_uncaught_throw(ant_t *js) {
 }
 
 bool print_unhandled_promise_rejection(ant_t *js, ant_value_t value) {
-  print_error_value(js, value, js_mkundef(), "Uncaught (in promise) ");
+  /* Prefer the reason's own stack: without it a rejection prints
+   * "[Object Object]" and the site bug is invisible. */
+  ant_value_t stack = js_get(js, value, "stack");
+
+  if (vtype(stack) != kTypeString) stack = js_mkundef();
+  print_error_value(js, value, stack, "Uncaught (in promise) ");
   return true;
 }
-
 js_err_type_t get_error_type(ant_t *js) {
   if (!Ant_Exception_Pending(js)) return JS_ERR_GENERIC;
   ant_value_t err_type = js_get_slot(Ant_Exception_Value(js, Ant_Exception_Peek(js)), SLOT_ERR_TYPE);
