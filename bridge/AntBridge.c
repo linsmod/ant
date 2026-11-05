@@ -13,6 +13,7 @@
 #include "ant.h"
 #include "esm/loader.h"
 #include "internal.h"
+#include "errors.h"   /* js_print_stack_trace_vm */
 #include "cfunc.h"     /* js_mkfun_dyn */
 #include "reactor.h"   /* ant_uv_run, js_poll_events */
 #include "runtime.h"
@@ -308,6 +309,17 @@ AntbValue* antb_eval_module(AntbEngine* engine, const char* src, int len,
  * Node's "unhandled rejection is fatal" (process_exit_with(EXIT_FAILURE) in
  * report_unhandled_rejection), which closes the whole browser when one page
  * promise goes unhandled. */
+/* Dump the live JS stack of the engine thread. Used by the hang watchdog:
+ * the caller suspends the engine thread first, so the VM state is frozen. */
+void antb_print_js_stack(AntbEngine* engine)
+{
+    if (!engine || !engine->js)
+        return;
+
+    js_print_stack_trace_vm(engine->js, stderr);
+    fflush(stderr);
+}
+
 void antb_set_uncaught_nonfatal(AntbEngine* engine, int on)
 {
     if (engine && engine->js) {

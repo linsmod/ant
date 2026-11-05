@@ -45,6 +45,16 @@ void print_error_value(ant_t *js, ant_value_t value, ant_value_t fallback_stack,
   } else if (is_real_error) {
     io_print_error_header(js, out, obj, plain);
     io_print_error_props(js, out, obj, plain);
+  } else if (vtype(value) == kTypeObject) {
+    /* Promise rejections often carry a plain object ({code, message, ...}).
+     * "[object Object]" hides the failure, so render name/message the same way
+     * a real Error would be rendered. */
+    errbuf_t eb;
+    if (errbuf_init(&eb, 512)) {
+      size_t n = error_render_value(&eb, js, 0, value);
+      if (n) ant_output_stream_append_cstr(out, eb.buf);
+      free(eb.buf);
+    }
   } else ant_output_stream_append_cstr(out, js_str(js, value));
 
   ant_output_stream_putc(out, '\n');

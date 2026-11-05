@@ -19466,20 +19466,37 @@ static ant_value_t proxy_get_with_receiver(ant_t *js, ant_value_t proxy, const c
       if (is_err(result)) return result;
 
       ant_prop_loc_t prop_off = lkp(js, target, key, key_len);
-      if (prop_off.obj && proxy_target_prop_is_nonconfig(js, target, prop_off) &&
-          proxy_target_prop_is_const(js, target, prop_off)) {
-        ant_value_t target_value = js_prop_load(prop_off);
-        if (!strict_eq_values(js, result, target_value))
-          return js_mkerr_typed(js, JS_ERR_TYPE, "'get' on proxy: trap returned invalid value for non-configurable, non-writable property");
-      }
-
       prop_meta_t meta;
       bool has_meta = lookup_string_prop_meta(js, js_as_obj(target), key, key_len, &meta);
+      bool is_accessor = has_meta && (meta.has_getter || meta.has_setter);
+      /* The non-configurable/non-writable invariant only applies to *data*
+       * properties. Accessor properties are covered by the meta check below
+       * (which calls the getter); treating them as const data properties made
+       * Vue Router's route proxy throw "trap returned invalid value". */
+      if (!is_accessor && prop_off.obj && proxy_target_prop_is_nonconfig(js, target, prop_off) &&
+          proxy_target_prop_is_const(js, target, prop_off)) {
+        ant_value_t target_value = js_prop_load(prop_off);
+        if (!strict_eq_values(js, result, target_value)) {
+          if (getenv("AGB_PROXY_DEBUG")) {
+            char dbg[256];
+            snprintf(dbg, sizeof(dbg), "[proxy] key=%.*s result=%d target=%d", (int)key_len, key, (int)vtype(result), (int)vtype(target_value));
+            fputs(dbg, stderr); fputc(10, stderr);
+          }
+          return js_mkerr_typed(js, JS_ERR_TYPE, "'get' on proxy: trap returned invalid value for non-configurable, non-writable property");
+        }
+      }
+
       if (has_meta && !meta.configurable) {
         if (!meta.has_getter && !meta.has_setter && !meta.writable && prop_off.obj) {
           ant_value_t target_value = js_prop_load(prop_off);
-          if (!strict_eq_values(js, result, target_value))
+          if (!strict_eq_values(js, result, target_value)) {
+            if (getenv("AGB_PROXY_DEBUG")) {
+              char dbg[256];
+              snprintf(dbg, sizeof(dbg), "[proxy-meta] key=%.*s result=%d target=%d", (int)key_len, key, (int)vtype(result), (int)vtype(target_value));
+              fputs(dbg, stderr); fputc(10, stderr);
+            }
             return js_mkerr_typed(js, JS_ERR_TYPE, "'get' on proxy: trap returned invalid value for non-configurable, non-writable property");
+          }
         }
         if ((meta.has_getter || meta.has_setter) && !meta.has_getter && vtype(result) != kTypeUndefined)
           return js_mkerr_typed(js, JS_ERR_TYPE, "'get' on proxy: trap returned non-undefined for property with undefined getter");
