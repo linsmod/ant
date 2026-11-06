@@ -1,7 +1,14 @@
 #include "interrupt.h"
 #include "errors.h"
+#include <stdatomic.h>
 
 ant_value_t js_interrupt_raise(ant_t *js) {
+  /* Consume the request: it is one abort, not a mode. Leaving it set made every
+   * later safepoint raise again, so the *next* page's scripts were killed too -
+   * a browser that showed a blank page on every reload after one abort. The
+   * result still carries SLOT_VM_TERMINATION, so the unwinding host can tell
+   * this apart from an ordinary error. */
+  atomic_store_explicit(&js->interrupt_pending, 0, memory_order_relaxed);
   js->terminating = true;
   
   ant_value_t error = js_take_thrown(js, js_mkerr(js, "Script execution interrupted"));
