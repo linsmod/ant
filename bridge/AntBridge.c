@@ -366,6 +366,52 @@ void antb_print_last_js_stack(void)
     antb_print_js_stack(g_lastEngine);
 }
 
+/* Debugger path: write the JS stack to a file instead of stderr. A debugger
+ * attached to a running browser cannot read the debuggee's stderr, and
+ * .call'ing freopen/_dup2 inside it to redirect is a footgun - one unresolvable
+ * cdb command aborts the command table before qd and the process is terminated
+ * (docs/dev-debugging.md). Let the engine do the writing:
+ *
+ *   cdb -p <pid> -c "eza antjsb!antb_dump_path \"E:/tmp/js.txt\"; ^
+ *                    .call antjsb!antb_dump_last_js_stack_to_file(antjsb!antb_dump_path); qd"
+ *
+ * cdb's MASM expression parser rejects string literals in .call, so the path is
+ * deposited in antb_dump_path first (a plain writable buffer) and only its
+ * address is passed. Unbuffered on purpose: if the VM walk itself faults, the
+ * frames printed so far survive. Returns 1 on success. */
+char antb_dump_path[512] = "agb_jsstack.txt";
+
+int antb_dump_js_stack_to_file(AntbEngine* engine, const char* path)
+{
+    FILE* f;
+
+    if (!path || !*path)
+        path = antb_dump_path;
+
+    f = fopen(path, "w");
+    if (!f)
+        return 0;
+
+    setvbuf(f, NULL, _IONBF, 0);
+
+    if (engine && engine->js) {
+        js_print_stack_trace_vm(engine->js, f);
+    } else {
+        fprintf(f, "(no engine)\n");
+        fclose(f);
+        return 0;
+    }
+
+    fflush(f);
+    fclose(f);
+    return 1;
+}
+
+int antb_dump_last_js_stack_to_file(const char* path)
+{
+    return antb_dump_js_stack_to_file(g_lastEngine, path);
+}
+
 /* ---- realms ------------------------------------------------------------- */
 
 AntbRealm* antb_realm_create(AntbEngine* engine)

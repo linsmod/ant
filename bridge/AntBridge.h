@@ -114,6 +114,16 @@ AGB_API void antb_set_uncaught_nonfatal(AntbEngine* engine, int on);
 AGB_API void antb_print_js_stack(AntbEngine* engine);
 /* Crash path: dump the most recently created engine's JS stack. */
 AGB_API void antb_print_last_js_stack(void);
+/* Debugger path: same stacks, written to `path` instead of stderr. Unbuffered,
+ * so a fault inside the VM walk still leaves the frames printed so far.
+ * `path` NULL/empty means antb_dump_path. Returns 1 on success. */
+AGB_API int antb_dump_js_stack_to_file(AntbEngine* engine, const char* path);
+AGB_API int antb_dump_last_js_stack_to_file(const char* path);
+
+/* Writable scratch path for debugger-driven dumps: cdb cannot put a string
+ * literal into .call, so tooling writes the filename here first
+ * (`eza antjsb!antb_dump_path "E:/tmp/js.txt"`) and passes its address. */
+AGB_API extern char antb_dump_path[512];
 AGB_API void antb_set_module_fetcher(AntbModuleFetcher fn);
 
 /* Name used in stack traces for the next evaluations (usually the script URL). */
