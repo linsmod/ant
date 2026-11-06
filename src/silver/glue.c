@@ -468,6 +468,7 @@ ant_value_t jit_helper_strict_arguments(
     &frame, argc, 0, true
   );
     
+done:
   GC_ROOT_RESTORE(js, root_mark);
   return result;
 }
@@ -1759,15 +1760,46 @@ static ant_value_t jit_put_elem(ant_t *js, ant_value_t obj, ant_value_t key, ant
     } else {
       ant_value_t key_jv = sv_key_to_propstr(js, key);
 
+      /* Conversion can fail (OOM while materialising a huge concatenated key -
+       * 163's adtracker does exactly that) and then yields an *error value*,
+       * not a string. Storing it made setprop hash the error object's bytes:
+       * the page-visible "TypeError: oom" and the hash_key AV came from here. */
+      if (is_err(key_jv)) {
+        result = key_jv;
+        goto done;
+      }
+
       /* The converted key is a fresh string that only this frame refers to; the
        * store walks the shape chain and can collect, so pin it too (R66/R71:
        * non-index numeric keys - fractions, negatives, > 2^32 - took exactly
        * that path without a pin and died in hash_key on 163's adtracker). */
       GC_ROOT_PIN(js, key_jv);
+
+      /* Pin the *value* is not enough: a rope/converted key exposes its bytes
+       * through a flatten buffer that a later collection can drop, and then
+       * setprop hashes freed memory (163's adtracker, hash_key read of
+       * 0x1a93... ). Copy the bytes into a flat string now and store with that:
+       * the copy owns its bytes, and the store only reads them for as long as
+       * the pinned value lives. */
+      {
+        ant_offset_t klen = 0;
+        const char* kb = (const char*)(uintptr_t)vstr(js, key_jv, &klen);
+
+        if (kb && klen > 0) {
+          ant_value_t flat = js_mkstr(js, kb, (size_t)klen);
+
+          if (!is_err(flat)) {
+            GC_ROOT_PIN(js, flat);
+            key_jv = flat;
+          }
+        }
+      }
+
       result = js_setprop_keyed(js, obj, key_jv, val);
     }
   }
 
+done:
   GC_ROOT_RESTORE(js, root_mark);
   return result;
 }

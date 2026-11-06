@@ -316,6 +316,17 @@ index_elem_test = executable(
 )
 test('index-elem', index_elem_test)
 
+# Dynamic keyed stores must survive a collection between key conversion and the
+# store (string / fractional / long keys); 163's adtracker crashed here.
+put_elem_gc_test = executable(
+  'test-put-elem-gc',
+  files('tests/test_put_elem_gc.c'),
+  dependencies: libant_dep,
+  c_args: ['-UNDEBUG'],
+  build_by_default: false
+)
+test('put-elem-gc', put_elem_gc_test, env: ['ANT_GC_STRESS=1'])
+
 json_layout_test = executable(
   'test-json-layout-cache',
   files('tests/test_json_layout_cache.c'),
