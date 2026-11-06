@@ -126,6 +126,12 @@ AGB_API int antb_dump_last_js_stack_to_file(const char* path);
  * while nothing is running is cleared by the next top-level eval. */
 AGB_API void antb_interrupt_all_engines(void);
 
+/* Depth of the VM's JS call stack right now, 0 when no page script is running.
+ * Safe to poll from another thread: it is a field read, not a handshake. This
+ * is what lets a host tell "the page is busy with JS" (interruptible) from "the
+ * engine is wedged outside JS" (interrupting it would do nothing). */
+AGB_API unsigned int antb_engines_js_depth(void);
+
 /* Writable scratch path for debugger-driven dumps: cdb cannot put a string
  * literal into .call, so tooling writes the filename here first
  * (`eza antjsb!antb_dump_path "E:/tmp/js.txt"`) and passes its address. */

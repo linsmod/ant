@@ -413,6 +413,25 @@ void antb_interrupt_all_engines(void)
     }
 }
 
+/* How deep the VM's JS call stack is right now (0 = no JS executing). Ant uses
+ * the very same field to tell whether it is at a job boundary
+ * (src/modules/timer.c: `At_job_boundary = js->vm_exec_depth == 0`), so this is
+ * literally "is a page script on the stack". The host polls it from another
+ * thread: a single uint32 field read, and the caller only compares against
+ * zero, so a torn value is not a concern. */
+unsigned int antb_engines_js_depth(void)
+{
+    unsigned int depth = 0;
+
+    for (int i = 0; i < g_engineCount; ++i) {
+        AntbEngine* engine = g_engines[i];
+        if (!engine || !engine->js) continue;
+        if (engine->js->vm_exec_depth > depth) depth = engine->js->vm_exec_depth;
+    }
+
+    return depth;
+}
+
 /* A top-level eval starts non-terminating: a previous abort (or a request that
  * raced with the end of the last script) must not leak into this one. */
 static void antb_begin_top_level(ant_t* js)
