@@ -12,6 +12,7 @@
 #include "errors.h"
 #include "gc/roots.h"
 #include "tokens.h"
+#include "strings.h"
 #include "silver/glue.h"
 #include "silver/jit.h"
 #include "modules/regex.h"
@@ -1624,6 +1625,39 @@ ant_value_t jit_helper_get_elem(
     if (d >= 0.0 && d < 4294967295.0 && d == (double)(uint32_t)d) {
       ant_value_t fast;
       if (js_index_get_fast(js, obj, (ant_offset_t)(uint32_t)d, &fast)) return fast;
+    }
+  }
+
+  /* Dynamic string key on an ordinary object: answer it without the GC
+   * temp-root scope. Safe only when vstr() cannot allocate (the key is already
+   * a flat string) and the receiver has no exotic hooks; any miss falls through
+   * to the IC path below, which owns all the remaining guards. Profiling the
+   * monomorphic `O[k]` loop showed the root-scope push/grow plus this lookup as
+   * the whole cost (92 ns/op, ~4x the dense element read). */
+  if (vtype(key) == kTypeString && !str_is_heap_rope(key) && vtype(obj) == kTypeObject) {
+    ant_object_t *recv = js_obj_ptr(obj);
+
+    if (recv && !recv->flags.is_exotic && recv->shape) {
+      ant_offset_t scratch_len = 0;
+      const char *scratch = (const char *)(uintptr_t)vstr(js, key, &scratch_len);
+
+      if (scratch && scratch_len > 0) {
+        const char *interned = intern_find_flat(js, scratch, (size_t)scratch_len);
+
+        if (interned) {
+          int32_t slot = ant_shape_lookup_interned(recv->shape, interned);
+
+          if (slot >= 0) {
+            const ant_shape_prop_t *prop = ant_shape_prop_at(recv->shape, (uint32_t)slot);
+
+            if (prop && !prop->has_getter && !prop->has_setter) {
+              ant_value_t value = ant_object_prop_get_unchecked(recv, (uint32_t)slot);
+
+              if (!is_empty_slot(value)) return value;
+            }
+          }
+        }
+      }
     }
   }
 
