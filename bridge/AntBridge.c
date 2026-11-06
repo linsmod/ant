@@ -9,6 +9,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdarg.h>
+#include <stdatomic.h>
 
 #include "ant.h"
 #include "esm/loader.h"
@@ -23,6 +24,7 @@
 #include "ptr.h"        /* js_set_native / js_get_native (static inline) */
 #include "gc/roots.h"   /* gc_register_root: keep wrapper objects alive */
 #include "gc.h"         /* gc_run: forced collection in tests */
+#include "interrupt.h"  /* sv_jit_arm_interrupts: host-driven script abort */
 
 /* Optional host-provided diagnostics. The bridge must not include the
  * embedder's logging header: antjsb is built inside the ant tree. */
@@ -32,6 +34,16 @@ static void*     g_loggerUser = NULL;
 /* Most recently created engine: only used by the crash path, where the host
  * has no engine handle anymore (antb_print_last_js_stack). */
 static AntbEngine* g_lastEngine = NULL;
+
+/* Every live engine. A stuck page script is aborted by the host from whatever
+ * thread saw it hang (the UI thread, a test), and the flag lives on the isolate
+ * the engine thread is currently running - so set it on all of them. Only the
+ * engine whose code is inside a loop can observe it; the others are parked in
+ * the reactor. The flag is cleared at the start of every top-level eval, so a
+ * request that races with the end of the script cannot kill the next page. */
+static AntbEngine* g_engines[32];
+static void antb_begin_top_level(ant_t* js);
+static int g_engineCount = 0;
 
 static AntbValue* alloc_value(ant_t* js, ant_value_t v);
 
@@ -169,6 +181,8 @@ AntbEngine* antb_engine_create(const void* stack_anchor)
     }
 
     g_lastEngine = e;
+    if (g_engineCount < (int)(sizeof(g_engines) / sizeof(g_engines[0])))
+        g_engines[g_engineCount++] = e;
     return e;
 }
 
@@ -179,6 +193,12 @@ void antb_engine_destroy(AntbEngine* engine)
 
     if (g_lastEngine == engine)
         g_lastEngine = NULL;
+
+    for (int i = 0; i < g_engineCount; ++i) {
+        if (g_engines[i] != engine) continue;
+        g_engines[i] = g_engines[--g_engineCount];
+        break;
+    }
 
     /* The wrapper and class tables are process wide. An engine that goes away
      * must take its entries with it: a stale js pointer, a wrapper that is
@@ -230,6 +250,8 @@ static AntbValue* antb_eval_mode(AntbEngine* engine, const char* src, int len, c
         *err = NULL;
     if (!engine || !engine->js || !src || len < 0)
         return NULL;
+
+    antb_begin_top_level(engine->js);
 
     /* AGB_EVAL_MODE=script is the old compatibility switch; new callers use
      * antb_eval_script(), which is what page scripts need. */
@@ -285,6 +307,8 @@ AntbValue* antb_eval_module(AntbEngine* engine, const char* src, int len,
         *err = NULL;
     if (!engine || !engine->js || !src || len < 0)
         return NULL;
+
+    antb_begin_top_level(engine->js);
 
     if (filename && filename[0]) {
         struct AntbFilename* node =
@@ -364,6 +388,31 @@ void antb_print_js_stack(AntbEngine* engine)
 void antb_print_last_js_stack(void)
 {
     antb_print_js_stack(g_lastEngine);
+}
+
+/* Host-driven abort of a stuck page script: the browser's Reload/Stop while a
+ * page loop never returns. The VM polls interrupt_pending in interpreter calls
+ * and at JIT loop backedges, raises a termination error page code cannot catch,
+ * and unwinds to the host eval; arming makes already-compiled JIT code poll it
+ * too. Callable from any thread (atomic store); engines that are not executing
+ * anything simply carry the flag, and the next top-level eval clears it. */
+void antb_interrupt_all_engines(void)
+{
+    for (int i = 0; i < g_engineCount; ++i) {
+        AntbEngine* engine = g_engines[i];
+        if (!engine || !engine->js) continue;
+        sv_jit_arm_interrupts(engine->js);
+        atomic_store_explicit(&engine->js->interrupt_pending, 1, memory_order_relaxed);
+    }
+}
+
+/* A top-level eval starts non-terminating: a previous abort (or a request that
+ * raced with the end of the last script) must not leak into this one. */
+static void antb_begin_top_level(ant_t* js)
+{
+    if (!js) return;
+    js->terminating = false;
+    atomic_store_explicit(&js->interrupt_pending, 0, memory_order_relaxed);
 }
 
 /* Debugger path: write the JS stack to a file instead of stderr. A debugger

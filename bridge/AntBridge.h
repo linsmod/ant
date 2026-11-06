@@ -120,6 +120,12 @@ AGB_API void antb_print_last_js_stack(void);
 AGB_API int antb_dump_js_stack_to_file(AntbEngine* engine, const char* path);
 AGB_API int antb_dump_last_js_stack_to_file(const char* path);
 
+/* Host-driven abort of a stuck page script (Reload/Stop while a loop never
+ * returns). Safe from any thread; the VM raises a termination error that page
+ * code cannot catch and unwinds to the top-level eval. A request that arrives
+ * while nothing is running is cleared by the next top-level eval. */
+AGB_API void antb_interrupt_all_engines(void);
+
 /* Writable scratch path for debugger-driven dumps: cdb cannot put a string
  * literal into .call, so tooling writes the filename here first
  * (`eza antjsb!antb_dump_path "E:/tmp/js.txt"`) and passes its address. */
