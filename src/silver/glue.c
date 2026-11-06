@@ -1734,24 +1734,40 @@ ant_value_t jit_helper_put_global(
 }
 
 static ant_value_t jit_put_elem(ant_t *js, ant_value_t obj, ant_value_t key, ant_value_t val) {
-  if (vtype(key) == kTypeSymbol) return js_setprop_keyed(js, obj, key, val);
-  if (vtype(key) == kTypeNumber) {
-    double index = tod(key);
-    if (index >= 0.0 && index < (double)UINT32_MAX &&
-      index == (double)(uint32_t)index)
-    return js_setprop_index(js, obj, (uint32_t)index, val);
-  }
-  ant_value_t key_jv = sv_key_to_propstr(js, key);
-
-  /* `key_jv` may be a freshly converted string that only this frame refers to;
-   * setprop walks the shape chain and can collect, which used to free the key
-   * under hash_key (v.qq.com, strict obj[key]=v, R66). */
+  /* obj/key/val are JIT alloca values: the GC does not scan them, so they must
+   * be rooted *before* anything that can allocate. R66 rooted only the
+   * converted `key_jv`, which left the window where sv_key_to_propstr() itself
+   * collects: the raw key was then freed before the store hashed it, which is
+   * exactly the 163/adtracker crash (hash_key reading a dead string, R71). */
   GC_ROOT_SAVE(root_mark, js);
+  ant_value_t result;
+
   GC_ROOT_PIN(js, obj);
   GC_ROOT_PIN(js, key);
   GC_ROOT_PIN(js, val);
-  GC_ROOT_PIN(js, key_jv);
-  ant_value_t result = js_setprop_keyed(js, obj, key_jv, val);
+
+  if (vtype(key) == kTypeSymbol) {
+    result = js_setprop_keyed(js, obj, key, val);
+  } else {
+    double index = tod(key);
+    bool element = vtype(key) == kTypeNumber &&
+                   index >= 0.0 && index < (double)UINT32_MAX &&
+                   index == (double)(uint32_t)index;
+
+    if (element) {
+      result = js_setprop_index(js, obj, (uint32_t)index, val);
+    } else {
+      ant_value_t key_jv = sv_key_to_propstr(js, key);
+
+      /* The converted key is a fresh string that only this frame refers to; the
+       * store walks the shape chain and can collect, so pin it too (R66/R71:
+       * non-index numeric keys - fractions, negatives, > 2^32 - took exactly
+       * that path without a pin and died in hash_key on 163's adtracker). */
+      GC_ROOT_PIN(js, key_jv);
+      result = js_setprop_keyed(js, obj, key_jv, val);
+    }
+  }
+
   GC_ROOT_RESTORE(js, root_mark);
   return result;
 }
