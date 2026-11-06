@@ -165,6 +165,14 @@ AntbEngine* antb_engine_create(const void* stack_anchor)
     js_setstackbase(e->js, (void*)stack_anchor);
     js_setstacklimit(e->js, 32u * 1024u * 1024u);
 
+    /* Arm interrupt polling from the start. The flag is consulted when JIT code
+     * is emitted (emit_common.c), so arming it only when the host asks for an
+     * abort is too late: functions compiled earlier have no poll sites and a
+     * stuck loop keeps running until it returns on its own - the browser then
+     * looks dead even though the request was accepted. Cost is one load and a
+     * predictable branch per loop backedge / call. */
+    sv_jit_arm_interrupts(e->js);
+
     /* Lifetime must match the engine: ant keeps this pointer. */
     e->argv[0] = (char*)"agave";
     e->argv[1] = NULL;
