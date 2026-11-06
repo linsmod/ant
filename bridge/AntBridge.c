@@ -262,12 +262,6 @@ static AntbValue* antb_eval_mode(AntbEngine* engine, const char* src, int len, c
 
     antb_begin_top_level(engine->js);
 
-    /* AGB_EVAL_MODE=script is the old compatibility switch; new callers use
-     * antb_eval_script(), which is what page scripts need. */
-    if (!script) {
-        const char* mode = getenv("AGB_EVAL_MODE");
-        if (mode && strcmp(mode, "script") == 0) script = 1;
-    }
 
     v = script
         ? js_eval_bytecode(engine->js, src, (size_t)len)
