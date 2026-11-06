@@ -1,5 +1,14 @@
 #include <math.h>
 #include <stdlib.h>
+
+/* AGB_ERR_SNIPPET is consulted on every error construction; cache it instead of
+ * scanning the environment each time (163's adtracker throws thousands). */
+static int ant_err_snippet_on(void)
+{
+    static int cached = -1;
+    if (cached < 0) cached = getenv("AGB_ERR_SNIPPET") ? 1 : 0;
+    return cached;
+}
 #include <string.h>
 #include <stdarg.h>
 
@@ -391,7 +400,7 @@ ant_value_t js_create_error(ant_t *js, js_err_type_t err_type, ant_value_t props
     va_start(ap4, fmt);
     vsnprintf(mb, sizeof mb, fmt, ap4);
     va_end(ap4);
-    if (getenv("AGB_ERR_SNIPPET") && (strstr(mb, "length") || strstr(mb, "not a function") ||
+    if (ant_err_snippet_on() && (strstr(mb, "length") || strstr(mb, "not a function") ||
                                       strstr(mb, "undefined") || strstr(mb, "prototype"))) {
       char sb[160];
       const char* sn = "";
@@ -427,7 +436,7 @@ ant_value_t js_create_error_at(
   ant_value_t value = CreateFormattedErrorValue(js, site, err_type, props, fmt, ap);
   va_end(ap);
 
-  if (!is_err(value) && getenv("AGB_ERR_SNIPPET")) {
+  if (!is_err(value) && ant_err_snippet_on()) {
     /* A null site means the throw came from a native property helper; the VM
      * top still knows the executing function and bytecode offset, so fall back
      * to it instead of dropping the snippet (that is where "reading

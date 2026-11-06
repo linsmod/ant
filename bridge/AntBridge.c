@@ -34,6 +34,7 @@ static void*     g_loggerUser = NULL;
 /* Most recently created engine: only used by the crash path, where the host
  * has no engine handle anymore (antb_print_last_js_stack). */
 static AntbEngine* g_lastEngine = NULL;
+static int g_call_debug = -1;
 
 /* Every live engine. A stuck page script is aborted by the host from whatever
  * thread saw it hang (the UI thread, a test), and the flag lives on the isolate
@@ -2330,12 +2331,15 @@ AntbValue* antb_call(AntbEngine* engine, const AntbValue* fn, const AntbValue* s
 
     this_v = (self && self->js) ? self->v : js_glob(engine->js);
 
-    if (getenv("AGB_CALL_DEBUG"))
+    /* Cached: this runs on every antb_call and getenv() is a linear scan of the
+     * process environment - the trace switches are read once per process. */
+    if (g_call_debug < 0) g_call_debug = getenv("AGB_CALL_DEBUG") ? 1 : 0;
+    if (g_call_debug)
         fprintf(stderr, "[call] enter fn=%p argc=%d\n", (void*)fn->v, argc);
 
     r = js_call_value(engine->js, fn->v, this_v, argv, argc);
 
-    if (getenv("AGB_CALL_DEBUG"))
+    if (g_call_debug)
         fprintf(stderr, "[call] leave fn=%p\n", (void*)fn->v);
     if (is_err(r)) {
         copy_cstr(engine, "call failed", js_take_thrown(engine->js, r));
