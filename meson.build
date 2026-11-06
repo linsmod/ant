@@ -305,6 +305,17 @@ keyed_store_test = executable(
 )
 test('keyed-store-policy', keyed_store_test)
 
+# P1-g: dense/sparse element access semantics + js_index_get_fast() declining
+# what it cannot answer (accessors, prototype indices, deleted slots).
+index_elem_test = executable(
+  'test-index-elem',
+  files('tests/test_index_elem.c'),
+  dependencies: libant_dep,
+  c_args: ['-UNDEBUG'],
+  build_by_default: false
+)
+test('index-elem', index_elem_test)
+
 json_layout_test = executable(
   'test-json-layout-cache',
   files('tests/test_json_layout_cache.c'),

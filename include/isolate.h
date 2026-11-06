@@ -62,7 +62,11 @@ static constexpr int MAX_DENSE_INITIAL_CAP = 8;
 // new Array(n) allocates dense storage for the whole length up to this
 // many elements, so filling it stays on the fast path
 static constexpr uint32_t MAX_DENSE_PREALLOC_LEN = 65536;
+// Bytecode VMs address array slots in the thousands; a 1024-entry memo made
+// every such access re-intern the decimal key (P1-g). 8192 pointers = 64 KiB.
 static constexpr uint32_t INTERN_INDEX_CACHE_SIZE = 1024;
+static constexpr uint32_t INDEX_KEY_HASH_BITS = 10;
+static constexpr uint32_t INDEX_KEY_HASH_SIZE = 1u << INDEX_KEY_HASH_BITS;
 static constexpr uint32_t ANT_RUNTIME_WEB_COMPAT = 1u << 0;
 
 static constexpr uint32_t INTERN_MEMO_SIZE = 64;
@@ -310,6 +314,10 @@ struct ant_isolate_t {
     const char *get_own_property_descriptor;
     const char *module_cache;
     const char *idx[INTERN_INDEX_CACHE_SIZE];
+    /* Direct-mapped cache for indices past the linear memo: bytecode VMs
+     * address slots in the tens of thousands, so without this every such
+     * access re-interns the decimal key (P1-g). */
+    struct { uint32_t idx; const char *interned; } idx_hash[INDEX_KEY_HASH_SIZE];
   } intern;
 
   ant_value_t exception;

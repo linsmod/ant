@@ -1613,6 +1613,19 @@ ant_value_t jit_helper_get_elem(
   sv_vm_t *vm, ant_t *js, ant_value_t obj,
   ant_value_t key, sv_func_t *func, int32_t bc_off, sv_ic_entry_t *ic
 ) {
+  /* Hot element read on an array (dense, or an element stored as an interned
+   * index key): answer it before paying for the GC temp-root scope below. The
+   * fast path cannot allocate or call JS, so obj/key need no rooting yet.
+   * Bytecode VMs run `G[T[++P]]` millions of times, so this is the difference
+   * between a hang and a load (P1-g). */
+  if (vtype(obj) == kTypeArray && vtype(key) == kTypeNumber) {
+    double d = tod(key);
+    if (d >= 0.0 && d < 4294967295.0 && d == (double)(uint32_t)d) {
+      ant_value_t fast;
+      if (js_index_get_fast(js, obj, (ant_offset_t)(uint32_t)d, &fast)) return fast;
+    }
+  }
+
   /* Getters, proxies and the string-key IC path can allocate; obj/key are JIT
    * alloca values and are not scanned by the GC. */
   GC_TEMP_ROOT_SCOPE(roots, js);

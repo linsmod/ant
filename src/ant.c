@@ -645,6 +645,11 @@ static inline ant_value_t dense_get(ant_offset_t doff, ant_offset_t idx);
 static ant_offset_t get_array_length(ant_t *js, ant_value_t arr);
 static ant_value_t arr_get(ant_t *js, ant_value_t arr, ant_offset_t idx);
 
+/* Defined with the keyed store helpers further down; the sparse element fast
+ * paths in arr_get/setprop_index_impl need the interned index key. */
+static inline const char *index_key_find(ant_t *js, uint32_t idx, char *buf, size_t *len);
+static inline const char *index_key_cached(ant_t *js, uint32_t idx);
+
 static bool arr_has(ant_t *js, ant_value_t arr, ant_offset_t idx);
 static bool try_accessor_getter(ant_t *js, ant_value_t obj, const char *key, size_t key_len, ant_value_t *out);
 static bool try_dynamic_setter(ant_t *js, ant_value_t obj, const char *key, size_t key_len, ant_value_t value);
@@ -2499,6 +2504,30 @@ static inline ant_value_t arr_get(ant_t *js, ant_value_t arr, ant_offset_t idx) 
       if (!is_empty_slot(v)) return v;
     }
   }
+
+  /* Sparse element on the array itself (P1-g): `arr[100000] = v` stores the
+   * element as an interned index key in the shape, not in a dense buffer. The
+   * generic lkp() below re-converts the index to a string and walks the whole
+   * property path, which is what makes bytecode VMs (`G[T[++P]]` with slots in
+   * the thousands) spend minutes where V8 needs milliseconds. Resolve the
+   * (shape, interned index key) pair directly instead. */
+  {
+    ant_object_t *own = array_obj_ptr(arr);
+    if (own && own->shape && ant_shape_may_have_index_keys(own->shape) && idx <= 0xFFFFFFFE) {
+      char keybuf[16];
+      size_t keylen = 0;
+      const char *interned = index_key_find(js, (uint32_t)idx, keybuf, &keylen);
+
+      if (interned) {
+        int32_t slot = ant_shape_lookup_interned(own->shape, interned);
+        if (slot >= 0) {
+          const ant_shape_prop_t *meta = ant_shape_prop_at(own->shape, (uint32_t)slot);
+          if (meta && !meta->has_getter && !meta->has_setter)
+            return ant_object_prop_get_unchecked(own, (uint32_t)slot);
+        }
+      }
+    }
+  }
   
   char idxstr[16];
   size_t idxlen = uint_to_str(idxstr, sizeof(idxstr), (unsigned)idx);
@@ -3404,6 +3433,49 @@ ant_value_t js_arr_get(ant_t *js, ant_value_t arr, ant_offset_t idx) {
   }
   if (vtype(arr) != kTypeArray) return js_mkundef();
   return arr_get(js, arr, idx);
+}
+
+/* Allocation-free element read for the hot element opcode (P1-g). Only answers
+ * cases that cannot allocate or run JS; anything else returns false so the
+ * caller takes the general path with a GC temp-root scope around it. */
+bool js_index_get_fast(ant_t *js, ant_value_t arr, ant_offset_t idx, ant_value_t *out) {
+  ant_object_t *own = array_obj_ptr(arr);
+  if (!own || is_proxy(arr)) return false;
+
+  if (own->flags.fast_array && own->u.array.data &&
+      idx < (ant_offset_t)own->u.array.len && idx < (ant_offset_t)own->u.array.cap) {
+    ant_value_t v = own->u.array.data[idx];
+    if (!is_empty_slot(v)) { *out = v; return true; }
+  }
+
+  ant_offset_t doff = get_dense_buf(arr);
+  if (doff) {
+    ant_offset_t len = dense_iterable_length(js, arr);
+    if (idx < len) {
+      ant_value_t v = dense_get(doff, idx);
+      if (!is_empty_slot(v)) { *out = v; return true; }
+    }
+  }
+
+  /* Element stored as an interned index key in the shape (sparse array). Uses
+   * the memo only: building a key would intern a string, and interning is not
+   * something this function may do. */
+  if (own->shape && idx <= 0xFFFFFFFE && ant_shape_may_have_index_keys(own->shape)) {
+    const char *interned = index_key_cached(js, (uint32_t)idx);
+
+    if (interned) {
+      int32_t slot = ant_shape_lookup_interned(own->shape, interned);
+      if (slot >= 0) {
+        const ant_shape_prop_t *meta = ant_shape_prop_at(own->shape, (uint32_t)slot);
+        if (meta && !meta->has_getter && !meta->has_setter) {
+          *out = ant_object_prop_get_unchecked(own, (uint32_t)slot);
+          return true;
+        }
+      }
+    }
+  }
+
+  return false;
 }
 
 static inline bool is_const_prop(ant_prop_loc_t loc) {
@@ -4924,26 +4996,55 @@ ant_value_t js_setprop_keyed(ant_t *js, ant_value_t obj, ant_value_t k, ant_valu
   return setprop_impl(js, obj, k, v, true, NULL);
 }
 
+/* Interned-key memo for numeric element indices. The first INTERN_INDEX_CACHE_SIZE
+ * entries use the linear table (also read by the JIT element fast path); larger
+ * indices - bytecode VM slots live in the tens of thousands - go through a
+ * direct-mapped hash so they stop re-interning the decimal key every access. */
+static inline const char *index_key_cached(ant_t *js, uint32_t idx) {
+  if (idx < INTERN_INDEX_CACHE_SIZE) return js->intern.idx[idx];
+
+  uint32_t slot = (uint32_t)((idx * 2654435761u) >> (32 - INDEX_KEY_HASH_BITS));
+  const char *interned = js->intern.idx_hash[slot].interned;
+  return (interned && js->intern.idx_hash[slot].idx == idx) ? interned : NULL;
+}
+
+static inline void index_key_cache_store(ant_t *js, uint32_t idx, const char *interned) {
+  if (!interned) return;
+
+  if (idx < INTERN_INDEX_CACHE_SIZE) {
+    js->intern.idx[idx] = interned;
+    return;
+  }
+
+  uint32_t slot = (uint32_t)((idx * 2654435761u) >> (32 - INDEX_KEY_HASH_BITS));
+  js->intern.idx_hash[slot].idx = idx;
+  js->intern.idx_hash[slot].interned = interned;
+}
+
 static inline const char *index_key_find(ant_t *js, uint32_t idx, char *buf, size_t *len) {
-  if (idx < INTERN_INDEX_CACHE_SIZE && js->intern.idx[idx]) return js->intern.idx[idx];
+  const char *cached = index_key_cached(js, idx);
+  if (cached) return cached;
+
   *len = uint_to_str(buf, 16, idx);
   const char *interned = intern_find(js, buf, *len);
-  if (interned && idx < INTERN_INDEX_CACHE_SIZE) js->intern.idx[idx] = interned;
+  index_key_cache_store(js, idx, interned);
   return interned;
 }
 
 static inline const char *index_key_intern(ant_t *js, uint32_t idx, char *buf, size_t *len) {
   if (!*len) *len = uint_to_str(buf, 16, idx);
   const char *interned = intern_string(js, buf, *len);
-  if (interned && idx < INTERN_INDEX_CACHE_SIZE) js->intern.idx[idx] = interned;
+  index_key_cache_store(js, idx, interned);
   return interned;
 }
 
 static inline const char *index_key_get_or_intern(ant_t *js, uint32_t idx) {
-  if (idx < INTERN_INDEX_CACHE_SIZE && js->intern.idx[idx]) return js->intern.idx[idx];
+  const char *cached = index_key_cached(js, idx);
+  if (cached) return cached;
+
   char buf[16];
   const char *interned = intern_string(js, buf, uint_to_str(buf, sizeof(buf), idx));
-  if (interned && idx < INTERN_INDEX_CACHE_SIZE) js->intern.idx[idx] = interned;
+  index_key_cache_store(js, idx, interned);
   return interned;
 }
 
@@ -5020,6 +5121,16 @@ ant_value_t js_get_index_fast(ant_t *js, ant_value_t obj, ant_value_t key) {
     return js_string_past_end_is_undefined(js, obj) ? js_mkundef() : T_EMPTY;
   }
 
+  /* Arrays (dense or with elements stored as interned index keys) answer the
+   * numeric-key site directly. Without this, every JIT'd `arr[i]` missed the
+   * fast path here and fell through jit_helper_get_elem, whose GC temp-root
+   * scope and fallback dispatch cost ~20x a dense read (P1-g). arr_get handles
+   * protos, holes and accessor slots itself, so its answer is final. */
+  if (vtype(obj) == kTypeArray) {
+    if (is_proxy(obj)) return T_EMPTY;
+    return arr_get(js, obj, (ant_offset_t)idx);
+  }
+
   ant_object_t *ptr = vtype(obj) == kTypeObject ? (ant_object_t *)vptr(obj) : NULL;
   if (!ptr || ptr->flags.is_exotic || !ptr->shape) return T_EMPTY;
   
@@ -5045,6 +5156,34 @@ static ant_value_t setprop_index_impl(ant_t *js, ant_value_t obj, uint32_t idx, 
   }
 
   ant_object_t *ptr = array_obj_ptr(obj);
+
+  /* Sparse element that already lives in the shape (P1-g): write it in place.
+   * The generic keyed path below only handles plain objects, so an array with
+   * elements stored as interned index keys would otherwise rebuild the index
+   * string and walk the whole property chain on every store. */
+  if (ptr && !is_proxy(obj) && ptr->shape && ant_shape_may_have_index_keys(ptr->shape) &&
+      (ant_offset_t)idx < get_array_length(js, obj)) {
+    char keybuf[16];
+    size_t keylen = 0;
+    const char *interned = index_key_find(js, idx, keybuf, &keylen);
+
+    if (interned) {
+      int32_t slot = ant_shape_lookup_interned(ptr->shape, interned);
+      if (slot >= 0) {
+        const ant_shape_prop_t *prop = ant_shape_prop_at(ptr->shape, (uint32_t)slot);
+        if (prop && !prop->has_getter && !prop->has_setter) {
+          if (!(prop->attrs & ANT_PROP_ATTR_WRITABLE))
+            return sv_is_strict_context(js)
+              ? js_mkerr(js, "assignment to read-only property")
+              : set_declined(declined, value);
+          ant_object_prop_set_unchecked(ptr, (uint32_t)slot, value);
+          gc_write_barrier(js, ptr, value);
+          return value;
+        }
+      }
+    }
+  }
+
   if (ptr && (ant_offset_t)idx >= get_array_length(js, obj) && array_length_readonly(js, obj)) {
     if (!array_store_reaches_proto(js, obj, ptr, idx)) return array_grow_readonly_result(js, idx, value, declined);
     goto keyed;
