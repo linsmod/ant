@@ -31,6 +31,11 @@ ant_value_t timers_library(ant_t *js);
 ant_value_t timers_promises_library(ant_t *js);
 
 void init_timer_module(ant_t *js);
+/* Browser-host helpers: install setTimeout/setInterval/... on the global of
+ * the currently entered realm. The timer state/prototypes are isolate-wide and
+ * init_timer_module() must have run first. Not part of ant_realm_create():
+ * Node's vm contexts intentionally have no timers. */
+void ant_realm_install_timers(ant_t *js);
 void cleanup_timer_module(ant_t *js);
 void process_microtasks(ant_t *js);
 void process_immediates(ant_t *js);

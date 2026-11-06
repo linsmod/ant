@@ -582,6 +582,15 @@ isolate_timers_test = executable(
 )
 test('isolate-timers', isolate_timers_test)
 
+realm_timers_test = executable(
+  'test-realm-timers',
+  files('tests/test_realm_timers.c'),
+  dependencies: libant_dep,
+  c_args: ['-UNDEBUG'],
+  build_by_default: false
+)
+test('realm-timers', realm_timers_test)
+
 ic_identity_wrap_test = executable(
   'test-ic-identity-wrap',
   files('tests/test_ic_identity_wrap.c'),

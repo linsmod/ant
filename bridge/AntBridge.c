@@ -21,6 +21,7 @@
 #include "runtime.h"
 #include "debug.h"   /* sv_debug_enable: AGB_JIT_DEBUG */
 #include "bootstrap.h"
+#include "modules/timer.h" /* ant_realm_install_timers: browser realms need timers */
 #include "ptr.h"        /* js_set_native / js_get_native (static inline) */
 #include "gc/roots.h"   /* gc_register_root: keep wrapper objects alive */
 #include "gc.h"         /* gc_run: forced collection in tests */
@@ -473,8 +474,23 @@ AntbRealm* antb_realm_create(AntbEngine* engine)
     if (!engine || !engine->js)
         return NULL;
 
-    /* ant_realm_create() restores the previous realm before returning. */
+    /* ant_realm_create() restores the previous realm before returning. Every
+     * browser frame gets its own realm, and that realm's global needs its own
+     * setTimeout/setInterval: init_timer_module() only installed them on the
+     * main realm's global at engine startup. Enter the new realm first so the
+     * native functions are interned with that realm as their owner (the VM
+     * switches back to the owner realm when the timer callback fires). */
     realm = ant_realm_create(engine->js);
+    if (!realm)
+        return NULL;
+
+    {
+        ant_realm_t* prev = ant_realm_enter(engine->js, realm);
+
+        ant_realm_install_timers(engine->js);
+        ant_realm_enter(engine->js, prev);
+    }
+
     return (AntbRealm*)realm;
 }
 

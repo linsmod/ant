@@ -1409,6 +1409,20 @@ static ant_value_t timer_make_template(ant_t *js, ant_value_t proto, ant_value_t
   return template;
 }
 
+/* Installs the timer entry points on the *current* realm's global object.
+ *
+ * The timer state (js->timers), the Timeout/Interval prototypes and templates
+ * are isolate-wide and are set up once by init_timer_module(). A new realm has
+ * its own global object but shares that state, so a browser host that creates
+ * one realm per frame calls this for each realm while it is entered.
+ *
+ * Deliberately NOT called from ant_realm_create(): Node's vm.runInNewContext()
+ * must keep `typeof setTimeout === 'undefined'` (tests/test_vm.cjs). Browser
+ * semantics belong to the embedding layer. */
+void ant_realm_install_timers(ant_t *js) {
+  timers_define_common(js, js_glob(js));
+}
+
 void init_timer_module(ant_t *js) {
   js->timers.next_timer_id = 1;
   js->timers.next_immediate_id = 1;
@@ -1451,7 +1465,7 @@ void init_timer_module(ant_t *js) {
   js->builtins.timeout_template = timer_make_template(js, js->builtins.timeout_proto, js_mknull());
   js->builtins.interval_template = timer_make_template(js, js->builtins.interval_proto, js_mknum(0));
 
-  timers_define_common(js, js_glob(js));
+  ant_realm_install_timers(js);
 }
 
 ant_value_t timers_library(ant_t *js) {
