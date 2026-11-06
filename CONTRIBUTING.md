@@ -56,6 +56,19 @@ changes do not depend on chat history or tribal knowledge.
 4. Ensure tests pass
 5. Submit a pull request
 
+### Finish and commit your own change
+
+**Whoever changes a file owns the wrap-up: validate it, add or update the test
+that covers it, keep the docs describing the touched behavior in sync, and
+commit it in the same working session.**
+
+Do not leave edits uncommitted for "someone else to commit". This repository is
+consumed by agave as a published binary (`3rdparty/ant/bin/antjsb.dll`): an
+uncommitted tree means the shipped dll and its sources silently diverge, and the
+next baseline sync or rebuild drops the change without any error. When a change
+also needs the consumer side updated, land both (this repo first, then the
+consumer's recorded artifacts) before calling it done.
+
 ## Code Style
 
 - **C code**: GNU23 standard, 2-space indent, no trailing whitespace
