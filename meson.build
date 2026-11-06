@@ -305,6 +305,19 @@ keyed_store_test = executable(
 )
 test('keyed-store-policy', keyed_store_test)
 
+# The bridge's native-method trampoline table is process wide. Slots must be
+# released when an engine is destroyed, or a host that creates one engine per
+# document reload runs out of them (~170 methods per realm).
+bridge_method_slots_test = executable(
+  'test-bridge-method-slots',
+  files('tests/test_bridge_method_slots.c', 'bridge/AntBridge.c'),
+  include_directories: [include, include_directories('bridge')],
+  dependencies: libant_dep,
+  c_args: ['-std=gnu23', '-UNDEBUG'],
+  build_by_default: false
+)
+test('bridge-method-slots', bridge_method_slots_test)
+
 # P1-g: dense/sparse element access semantics + js_index_get_fast() declining
 # what it cannot answer (accessors, prototype indices, deleted slots).
 index_elem_test = executable(

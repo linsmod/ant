@@ -146,10 +146,11 @@ static void copy_cstr(AntbEngine* e, const char* what, ant_value_t v)
     }
 }
 
-/* The wrapper and class tables are process wide; an engine that goes away
- * takes its entries with it (see antb_engine_destroy). */
+/* The wrapper, class and native-method tables are process wide; an engine that
+ * goes away takes its entries with it (see antb_engine_destroy). */
 static void agbReleaseEngineWrappers(AntbEngine* engine);
 static void agbReleaseEngineClasses(AntbEngine* engine);
+static void agbReleaseEngineMethods(AntbEngine* engine);
 
 AntbEngine* antb_engine_create(const void* stack_anchor)
 {
@@ -210,12 +211,14 @@ void antb_engine_destroy(AntbEngine* engine)
         break;
     }
 
-    /* The wrapper and class tables are process wide. An engine that goes away
-     * must take its entries with it: a stale js pointer, a wrapper that is
-     * handed out again, a table that runs out of slots (the class table had
-     * 128 entries and one class per engine - one engine per document). */
+    /* The wrapper, class and native-method tables are process wide. An engine
+     * that goes away must take its entries with it: a stale js pointer, a
+     * wrapper that is handed out again, a table that runs out of slots (the
+     * class table had 128 entries and one class per engine - one engine per
+     * document; the method table is the one a reload cycle exhausts first). */
     agbReleaseEngineWrappers(engine);
     agbReleaseEngineClasses(engine);
+    agbReleaseEngineMethods(engine);
 
     if (engine->js)
         js_destroy(engine->js);
@@ -2170,19 +2173,68 @@ static ant_value_t agb_dispatch(int slot, ant_t* js, ant_value_t* args, int narg
     return out_v.v;
 }
 
+/* Frees the native-method slots of an engine that is going away.
+ *
+ * The table holds one entry per bridged method, and each entry owns one
+ * trampoline (g_tramps[slot]). A slot may be reused as soon as its engine is
+ * destroyed: the JS function values that point at that trampoline live in the
+ * destroyed engine's heap, so no live caller can reach it any more.
+ *
+ * Leaving the slots allocated ran the table out after ~6 document reloads
+ * (each realm installs ~170 methods), after which antb_define_method silently
+ * did nothing: the next document got a window without its host API and a
+ * `document` object with no methods, and the page's load listeners never
+ * registered - the "reload until the page goes blank" report. */
+static void agbReleaseEngineMethods(AntbEngine* engine)
+{
+    int i;
+
+    if (!engine)
+        return;
+
+    for (i = 0; i < g_method_count; ++i) {
+        agb_method_entry* e = &g_methods[i];
+
+        if (e->fn && e->engine == engine) {
+            e->engine = NULL;
+            e->js     = NULL;
+            e->obj    = 0;
+            e->fn     = NULL;
+            e->user   = NULL;
+            e->name[0] = '\0';
+        }
+    }
+
+    /* Give the tail back: the fresh-engine case starts from an empty table. */
+    while (g_method_count > 0 && !g_methods[g_method_count - 1].fn)
+        --g_method_count;
+}
+
 void antb_define_method(AntbEngine* engine, AntbValue* obj, const char* name,
                         AntbNativeFn fn, void* user)
 {
     agb_method_entry* e;
     ant_value_t f;
-    int slot;
+    int slot = -1;
+    int i;
 
     if (!engine || !obj || !name || !fn)
         return;
-    if (g_method_count >= AGB_TRAMPOLINE_COUNT)
-        return;
 
-    slot = g_method_count++;
+    /* Reuse slots freed by destroyed engines before growing the table. */
+    for (i = 0; i < g_method_count; ++i) {
+        if (!g_methods[i].fn) {
+            slot = i;
+            break;
+        }
+    }
+
+    if (slot < 0) {
+        if (g_method_count >= AGB_TRAMPOLINE_COUNT)
+            return;
+        slot = g_method_count++;
+    }
+
     e = &g_methods[slot];
     e->engine = engine;
     e->js   = engine->js;
@@ -2190,6 +2242,7 @@ void antb_define_method(AntbEngine* engine, AntbValue* obj, const char* name,
     e->fn   = fn;
     e->user = user;
     strncpy(e->name, name, sizeof(e->name) - 1);
+    e->name[sizeof(e->name) - 1] = '\0';
 
     f = js_mkfun_dyn(g_tramps[slot]);
     /* js_set_function_name needs a real object; T_CFUNC rejects it */
