@@ -325,6 +325,12 @@ bool js_iter_open(ant_t *js, ant_value_t iterable, iterator_t *it) {
   }
 
   it->iterator = iterator;
+
+  /* The iterator only exists in this C frame while `next` is resolved, and
+   * resolving it can run a getter. */
+  GC_TEMP_ROOT_SCOPE(roots, js);
+  gc_temp_root_push(&roots, iterator);
+
   it->next_fn = iterator_get_method(js, iterator, "next", 4);
   
   if (is_err(it->next_fn)) return false;
@@ -666,6 +672,12 @@ static ant_value_t iter_every(ant_params_t) {
     return Ant_Exception_Pending(js) ? Ant_Exception_Current(js)
       : js_mkerr_typed(js, JS_ERR_TYPE, "object is not iterable");
 
+  /* The iterator object and its next method are only in this C frame while
+   * the callback runs. */
+  GC_TEMP_ROOT_SCOPE(roots, js);
+  gc_temp_root_push(&roots, it.iterator);
+  gc_temp_root_push(&roots, it.next_fn);
+
   ant_value_t value;
   uint32_t counter = 0;
   while (js_iter_next(js, &it, &value)) {
@@ -688,6 +700,12 @@ static ant_value_t iter_some(ant_params_t) {
   if (!js_iter_open(js, js->this_val, &it))
     return Ant_Exception_Pending(js) ? Ant_Exception_Current(js)
       : js_mkerr_typed(js, JS_ERR_TYPE, "object is not iterable");
+
+  /* The iterator object and its next method are only in this C frame while
+   * the callback runs. */
+  GC_TEMP_ROOT_SCOPE(roots, js);
+  gc_temp_root_push(&roots, it.iterator);
+  gc_temp_root_push(&roots, it.next_fn);
 
   ant_value_t value;
   uint32_t counter = 0;
@@ -712,9 +730,18 @@ static ant_value_t iter_find(ant_params_t) {
     return Ant_Exception_Pending(js) ? Ant_Exception_Current(js)
       : js_mkerr_typed(js, JS_ERR_TYPE, "object is not iterable");
 
+  /* The iterator object and its next method are only in this C frame while
+   * the callback runs. */
+  GC_TEMP_ROOT_SCOPE(roots, js);
+  gc_temp_root_push(&roots, it.iterator);
+  gc_temp_root_push(&roots, it.next_fn);
+  gc_temp_root_handle_t value_root = gc_temp_root_add(&roots, js_mkundef());
+  if (!gc_temp_root_handle_valid(value_root)) return js_mkerr(js, "oom");
+
   ant_value_t value;
   uint32_t counter = 0;
   while (js_iter_next(js, &it, &value)) {
+    gc_temp_root_set(value_root, value);
     ant_value_t test = call_indexed_callback(js, fn, value, (double)counter++);
     if (is_err(test)) { js_iter_close(js, &it); return test; }
     if (js_truthy(js, test)) {
@@ -734,6 +761,12 @@ static ant_value_t iter_forEach(ant_params_t) {
   if (!js_iter_open(js, js->this_val, &it))
     return Ant_Exception_Pending(js) ? Ant_Exception_Current(js)
       : js_mkerr_typed(js, JS_ERR_TYPE, "object is not iterable");
+
+  /* The iterator object and its next method are only in this C frame while
+   * the callback runs. */
+  GC_TEMP_ROOT_SCOPE(roots, js);
+  gc_temp_root_push(&roots, it.iterator);
+  gc_temp_root_push(&roots, it.next_fn);
 
   ant_value_t value;
   uint32_t counter = 0;
@@ -760,11 +793,18 @@ static ant_value_t iter_reduce(ant_params_t) {
   ant_value_t value;
   uint32_t counter = 0;
 
+  GC_TEMP_ROOT_SCOPE(roots, js);
+  gc_temp_root_push(&roots, it.iterator);
+  gc_temp_root_push(&roots, it.next_fn);
+  gc_temp_root_handle_t acc_root = gc_temp_root_add(&roots, acc);
+  if (!gc_temp_root_handle_valid(acc_root)) return js_mkerr(js, "oom");
+
   while (js_iter_next(js, &it, &value)) {
-    if (first) { acc = value; first = false; counter++; continue; }
+    if (first) { acc = value; first = false; counter++; gc_temp_root_set(acc_root, acc); continue; }
     ant_value_t call_args[3] = { acc, value, js_mknum((double)counter++) };
     acc = sv_vm_call(js->vm, js, fn, js_mkundef(), call_args, 3, NULL, js_mkundef());
     if (is_err(acc)) { js_iter_close(js, &it); return acc; }
+    gc_temp_root_set(acc_root, acc);
   }
 
   if (Ant_Exception_Pending(js)) return Ant_Exception_Current(js);
@@ -779,7 +819,12 @@ static ant_value_t iter_toArray(ant_params_t) {
     return Ant_Exception_Pending(js) ? Ant_Exception_Current(js)
       : js_mkerr_typed(js, JS_ERR_TYPE, "object is not iterable");
 
+  GC_TEMP_ROOT_SCOPE(roots, js);
+  gc_temp_root_push(&roots, it.iterator);
+  gc_temp_root_push(&roots, it.next_fn);
+
   ant_value_t arr = js_mkarr(js);
+  gc_temp_root_push(&roots, arr);
   ant_value_t value;
   while (js_iter_next(js, &it, &value))
     js_arr_push(js, arr, value);

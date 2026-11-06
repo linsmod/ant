@@ -1049,7 +1049,13 @@ static ant_value_t map_upsert(ant_params_t) {
 
   if (is_err(value)) return value;
 
+  /* The callback result and the normalized key are only in this C frame
+   * until map_store_entry() has stored them. */
+  GC_TEMP_ROOT_SCOPE(roots, js);
+  gc_temp_root_push(&roots, value);
+
   ant_value_t key_val = normalize_map_key(args[0]);
+  gc_temp_root_push(&roots, key_val);
   if (!map_store_entry(js, map_ptr, args[0], key_val, value))
     return Ant_Error_CreateOutOfMemory(js);
 
@@ -1814,6 +1820,10 @@ static ant_value_t weakmap_upsert(ant_params_t) {
 
   if (is_err(value)) return value;
 
+  /* The callback result is only in this C frame until it is stored. */
+  GC_TEMP_ROOT_SCOPE(roots, js);
+  gc_temp_root_push(&roots, value);
+
   if (!weakmap_store_entry(js, object, table, key_obj, value))
     return Ant_Error_CreateOutOfMemory(js);
 
@@ -2051,13 +2061,22 @@ static ant_value_t finreg_unregister(ant_params_t) {
 
 static ant_value_t map_group_add(ant_t *js, void *ctx, ant_value_t key, ant_value_t value) {
   map_entry_t **map_head = ctx;
+
+  /* The normalized key and a freshly created group are only reachable from
+   * this frame until the entry is stored. */
+  GC_TEMP_ROOT_SCOPE(roots, js);
+  gc_temp_root_handle_t key_root = gc_temp_root_add(&roots, key);
+  if (!gc_temp_root_handle_valid(key_root)) return Ant_Error_CreateOutOfMemory(js);
+
   key = normalize_map_key(key);
+  gc_temp_root_set(key_root, key);
   
   map_entry_t *entry = Ant_Map_Find(js, map_head, key);
   ant_value_t group;
 
   if (entry) group = entry->value; else {
     group = js_mkarr(js);
+    gc_temp_root_push(&roots, group);
     if (!map_store_entry(js, map_head, key, key, group)) return Ant_Error_CreateOutOfMemory(js);
   }
   
@@ -2078,6 +2097,10 @@ static ant_value_t map_groupBy(ant_params_t) {
   if (!map_head) return Ant_Error_CreateOutOfMemory(js);
   *map_head = NULL;
   js_set_native(map_obj, map_head, MAP_NATIVE_TAG);
+
+  /* map_obj owns map_head; keep it alive while the grouping callback runs. */
+  GC_TEMP_ROOT_SCOPE(roots, js);
+  gc_temp_root_push(&roots, map_obj);
   
   ant_value_t grouped = js_group_by(js, args[0], args[1], map_group_add, map_head);
   return is_err(grouped) ? grouped : map_obj;

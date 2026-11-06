@@ -1230,6 +1230,10 @@ static ant_value_t js_typedarray_map(ant_params_t) {
   if (is_err(out)) return out;
   TypedArrayData *out_ta = buffer_get_typedarray_data(out);
 
+  /* `out` is only reachable from this C frame while mapFn runs. */
+  GC_TEMP_ROOT_SCOPE(roots, js);
+  gc_temp_root_push(&roots, out);
+
   ant_value_t this_arg = nargs > 1 ? args[1] : js_mkundef();
   for (size_t i = 0; i < ta_data->length; i++) {
     ant_value_t value = js_mkundef();
@@ -1304,6 +1308,11 @@ static ant_value_t js_typedarray_reduce_common(ant_native_params_t, bool right) 
     if (!right) i++;
   }
 
+  /* The running accumulator is reused across JS calls; hold it explicitly. */
+  GC_TEMP_ROOT_SCOPE(roots, js);
+  gc_temp_root_handle_t acc_root = gc_temp_root_add(&roots, acc);
+  if (!gc_temp_root_handle_valid(acc_root)) return js_mkerr(js, "oom");
+
   while (right ? (i > 0) : (i < ta_data->length)) {
     if (right) i--;
     ant_value_t value = js_mkundef();
@@ -1311,6 +1320,7 @@ static ant_value_t js_typedarray_reduce_common(ant_native_params_t, bool right) 
     ant_value_t call_args[4] = { acc, value, js_mknum((double)i), this_val };
     acc = sv_vm_call(js->vm, js, args[0], js_mkundef(), call_args, 4, NULL, js_mkundef());
     if (is_err(acc)) return acc;
+    gc_temp_root_set(acc_root, acc);
     if (!right) i++;
   }
 
@@ -2068,6 +2078,10 @@ static ant_value_t js_typedarray_toSorted(ant_params_t) {
   
   TypedArrayData *result_ta = buffer_get_typedarray_data(result);
   uint8_t *data = result_ta->buffer->data;
+
+  /* comparefn can run arbitrary JS; `result`/`data` must stay alive. */
+  GC_TEMP_ROOT_SCOPE(roots, js);
+  gc_temp_root_push(&roots, result);
   
   ant_value_t comparefn = (nargs > 0 && vtype(args[0]) == kTypeFunction) ? args[0] : js_mkundef();
   

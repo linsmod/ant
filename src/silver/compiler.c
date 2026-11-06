@@ -809,7 +809,7 @@ static inline bool is_repl_top_level(const sv_compiler_t *c) {
  * inline caches. `let`/`const` stay lexical. */
 static inline bool is_program_root(const sv_compiler_t *c) {
   return c && c->mode == SV_COMPILE_SCRIPT &&
-         c->enclosing && !c->enclosing->enclosing;
+         c->enclosing && c->enclosing->script_root;
 }
 
 static inline bool is_program_top_level(const sv_compiler_t *c) {
@@ -8792,6 +8792,7 @@ sv_func_t *sv_compile(
     source_len, mode,
     (program->flags & FN_PARSE_STRICT) != 0,  NULL
   );
+  root.script_root = (mode == SV_COMPILE_SCRIPT);
   
   if (sv_compile_mode_is_eval(mode)) {
     root.eval_shadows_undefined = sv_eval_env_shadows_global(js, eval_env, "undefined", 9);

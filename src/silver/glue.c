@@ -1129,6 +1129,9 @@ ant_value_t jit_helper_get_field(
 ) {
   bool in_code = func && bc_off >= 0 && bc_off < func->code_len;
   sv_ic_entry_t *ic = in_code ? sv_ic_slot_for_ip(func, func->code + bc_off) : NULL;
+
+  GC_TEMP_ROOT_SCOPE(roots, js);
+  gc_temp_root_push(&roots, obj);
   
   ant_value_t out;
   if (
@@ -1142,6 +1145,8 @@ ant_value_t jit_helper_get_field(
 ant_value_t jit_helper_in_field(
   ant_t *js, ant_value_t obj, sv_atom_t *atom, sv_func_t *func, int32_t bc_off
 ) {
+  GC_TEMP_ROOT_SCOPE(roots, js);
+  gc_temp_root_push(&roots, obj);
   return sv_prop_in_field_ic(js, obj, atom, sv_ic_slot_for_ip(func, func->code + bc_off));
 }
 
@@ -1548,7 +1553,14 @@ ant_value_t jit_helper_put_field(
   sv_vm_t *vm, ant_t *js, ant_value_t obj,
   ant_value_t val, const char *str, uint32_t len
 ) {
+  /* obj/val come from the JIT alloca argument buffer; js_mkstr() and a setter
+   * can both allocate, so keep them reachable (same class as R66). */
+  GC_TEMP_ROOT_SCOPE(roots, js);
+  gc_temp_root_push(&roots, obj);
+  gc_temp_root_push(&roots, val);
+
   ant_value_t key = js_mkstr(js, str, len);
+  gc_temp_root_push(&roots, key);
   return js_setprop(js, obj, key, val);
 }
 
@@ -1573,6 +1585,12 @@ ant_value_t jit_helper_put_field_ic(
   sv_vm_t *vm, ant_t *js, ant_value_t obj, ant_value_t val,
   const sv_atom_t *atom, sv_ic_entry_t *ic, int strict
 ) {
+  /* IC hit can call a setter; the miss path walks the prototype chain and can
+   * allocate. obj/val are JIT alloca values. */
+  GC_TEMP_ROOT_SCOPE(roots, js);
+  gc_temp_root_push(&roots, obj);
+  gc_temp_root_push(&roots, val);
+
   ant_value_t out;
   if (sv_put_field_try_cached(js, obj, val, atom, ic, &out)) return out;
   jit_mode_t saved = jit_mode_enter(js, strict != 0);
@@ -1595,6 +1613,12 @@ ant_value_t jit_helper_get_elem(
   sv_vm_t *vm, ant_t *js, ant_value_t obj,
   ant_value_t key, sv_func_t *func, int32_t bc_off, sv_ic_entry_t *ic
 ) {
+  /* Getters, proxies and the string-key IC path can allocate; obj/key are JIT
+   * alloca values and are not scanned by the GC. */
+  GC_TEMP_ROOT_SCOPE(roots, js);
+  gc_temp_root_push(&roots, obj);
+  gc_temp_root_push(&roots, key);
+
   if (
     ic && vtype(key) == kTypeString &&
     (vtype(obj) == kTypeSymbol || vtype(obj) == kTypeObject)

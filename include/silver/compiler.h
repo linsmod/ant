@@ -211,6 +211,10 @@ typedef struct sv_compiler {
   bool inherits_eval_env;
   bool owns_eval_env;
   bool function_ctor_root;
+  /* Set only on the root of a top-level classic <script>. The program body
+   * is its child; a function compiled through sv_compile_function_with_params
+   * has the same shape but must NOT get browser global declarations. */
+  bool script_root;
   
   bool eval_shadows_undefined;
   bool eval_shadows_global_this;

@@ -34,6 +34,14 @@ static inline ant_value_t sv_invoke_native(
   if (__builtin_expect(sv_check_c_stack_overflow(js), 0))
     return Ant_Error_CreateStackOverflow(js);
 
+  /* A native function's arguments can live in the JIT's alloca argument
+   * buffer, which the GC does not scan (R63). Keep them reachable for the
+   * whole native call; this covers every builtin at once, instead of asking
+   * each one to root its own callback/receiver/accumulator arguments. */
+  GC_TEMP_ROOT_SCOPE(args_roots, js);
+  for (int i = 0; i < nargs; i++) gc_temp_root_push(&args_roots, args[i]);
+  gc_temp_root_push(&args_roots, new_target);
+
   if (__builtin_expect(Ant_Exception_Pending(js), 0))
     return Ant_Silver_InvokeNativeScoped(js, fn, args, nargs, new_target);
 

@@ -3633,14 +3633,22 @@ static ant_value_t builtin_regexp_symbol_replace(ant_params_t) {
   if (!is_object_type(rx))
     return js_mkerr_typed(js, JS_ERR_TYPE, "RegExp.prototype[@@replace] called on non-object");
 
+  /* The source string, the replacement callback and the collected match
+   * results all outlive JS calls below (the callback can allocate). */
+  GC_TEMP_ROOT_SCOPE(roots, js);
+  gc_temp_root_push(&roots, rx);
+
   ant_value_t str = nargs > 0 ? js_tostring_val(js, args[0]) : js_mkstr(js, "undefined", 9);
   if (is_err(str)) return str;
+  gc_temp_root_push(&roots, str);
   ant_value_t replace_value = nargs > 1 ? args[1] : js_mkundef();
+  gc_temp_root_push(&roots, replace_value);
   bool func_replace = (vtype(replace_value) == kTypeFunction || vtype(replace_value) == kTypeBuiltin);
   ant_value_t replace_str = js_mkundef();
   if (!func_replace) {
     replace_str = js_tostring_val(js, replace_value);
     if (is_err(replace_str)) return replace_str;
+    gc_temp_root_push(&roots, replace_str);
   }
 
   ant_value_t global_val = regexp_read_flag(js, rx, REGEXP_FLAG_INDEX_GLOBAL);
@@ -3676,6 +3684,7 @@ static ant_value_t builtin_regexp_symbol_replace(ant_params_t) {
 
   ant_value_t results = js_mkarr(js);
   if (is_err(results)) return results;
+  gc_temp_root_push(&roots, results);
   ant_offset_t nresults = 0;
 
   for (;;) {
@@ -4247,10 +4256,15 @@ static inline ant_value_t emit_str_replacement(
 }
 
 static ant_value_t string_replace_impl(ant_native_params_t, bool replace_all) {
+  /* A function replacement can trigger a collection; the coerced source and
+   * replacement must survive the loop. */
+  GC_TEMP_ROOT_SCOPE(roots, js);
+
   ant_value_t str = Ant_String_CoerceThis(js, replace_all ? "replaceAll" : "replace");
   
   if (is_err(str)) return str;
   if (nargs < 1) return str;
+  gc_temp_root_push(&roots, str);
 
   if (is_object_type(args[0])) {
     if (replace_all) {
@@ -4271,6 +4285,7 @@ static ant_value_t string_replace_impl(ant_native_params_t, bool replace_all) {
     
     coerced_search = js_tostring_val(js, coerced_search);
     if (is_err(coerced_search)) return coerced_search;
+    gc_temp_root_push(&roots, coerced_search);
     
     args[0] = coerced_search;
   }
@@ -4278,6 +4293,8 @@ static ant_value_t string_replace_impl(ant_native_params_t, bool replace_all) {
   if (nargs < 2) return str;
   ant_value_t search = args[0];
   ant_value_t replacement = args[1];
+  gc_temp_root_push(&roots, search);
+  gc_temp_root_push(&roots, replacement);
   if (vtype(search) != kTypeString) return str;
 
   ant_offset_t str_len, str_off = vstr(js, str, &str_len);

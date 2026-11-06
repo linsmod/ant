@@ -36,6 +36,16 @@ void gc_pop_roots(ant_t *js, size_t mark);
 void gc_visit_roots(ant_t *js, gc_root_visitor_t visitor);
 void gc_temp_root_scope_begin(ant_t *js, gc_temp_root_scope_t *scope);
 void gc_temp_root_scope_end(gc_temp_root_scope_t *scope);
+
+static inline void gc_temp_root_scope_cleanup(gc_temp_root_scope_t *scope) {
+  gc_temp_root_scope_end(scope);
+}
+
+/* Declares a scope and ends it automatically on every return path. This makes
+ * it hard to add a new `return` and forget to pop the roots. */
+#define GC_TEMP_ROOT_SCOPE(name, js_value) \
+  gc_temp_root_scope_t name __attribute__((cleanup(gc_temp_root_scope_cleanup))); \
+  gc_temp_root_scope_begin((js_value), &(name))
 void gc_temp_root_truncate(gc_temp_root_scope_t *scope, size_t mark);
 
 gc_temp_root_handle_t gc_temp_root_add(gc_temp_root_scope_t *scope, ant_value_t value);
