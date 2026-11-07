@@ -22,6 +22,7 @@
 #include "debug.h"   /* sv_debug_enable: AGB_JIT_DEBUG */
 #include "bootstrap.h"
 #include "modules/timer.h" /* ant_realm_install_timers: browser realms need timers */
+#include "modules/textcodec.h" /* td_set_provider: host-supplied legacy codecs */
 #include "ptr.h"        /* js_set_native / js_get_native (static inline) */
 #include "gc/roots.h"   /* gc_register_root: keep wrapper objects alive */
 #include "gc.h"         /* gc_run: forced collection in tests */
@@ -485,6 +486,53 @@ int antb_dump_js_stack_to_file(AntbEngine* engine, const char* path)
 int antb_dump_last_js_stack_to_file(const char* path)
 {
     return antb_dump_js_stack_to_file(g_lastEngine, path);
+}
+
+/* ---- legacy text codecs ------------------------------------------------- *
+ * The host owns the tables; ant only routes unknown labels here. The provider
+ * is translated from the public bridge struct into ant's own td_provider_t so
+ * the engine side never sees Antb* types. */
+
+static int bridge_textcodec_resolve(
+    void* user, const char* label, size_t len, char* out, size_t cap
+) {
+    const AntbTextCodecProvider* host = (const AntbTextCodecProvider*)user;
+
+    if (!host || !host->resolve) return 0;
+    return host->resolve(host->user, label, len, out, cap);
+}
+
+static long bridge_textcodec_decode(
+    void* user, const char* label,
+    const uint8_t* in, size_t in_len,
+    char* out, size_t out_cap, bool fatal
+) {
+    const AntbTextCodecProvider* host = (const AntbTextCodecProvider*)user;
+
+    if (!host || !host->decode) return -1;
+    return host->decode(host->user, label, in, in_len, out, out_cap, fatal ? 1 : 0);
+}
+
+void antb_set_text_codec_provider(const AntbTextCodecProvider* provider)
+{
+    /* The provider outlives every engine, so the translated struct is static;
+     * the host's pointer is copied in by value to survive a host that passes a
+     * stack temporary. */
+    static AntbTextCodecProvider hostCopy;
+    static td_provider_t antProvider;
+
+    if (!provider || (!provider->resolve && !provider->decode)) {
+        td_set_provider(NULL);
+        return;
+    }
+
+    hostCopy = *provider;
+
+    antProvider.resolve = bridge_textcodec_resolve;
+    antProvider.decode  = bridge_textcodec_decode;
+    antProvider.user    = &hostCopy;
+
+    td_set_provider(&antProvider);
 }
 
 /* ---- realms ------------------------------------------------------------- */

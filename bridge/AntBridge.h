@@ -10,6 +10,8 @@
 #ifndef ANT_BRIDGE_H
 #define ANT_BRIDGE_H
 
+#include <stddef.h>   /* size_t, for the text-codec provider callbacks */
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -119,6 +121,29 @@ AGB_API void antb_print_last_js_stack(void);
  * `path` NULL/empty means antb_dump_path. Returns 1 on success. */
 AGB_API int antb_dump_js_stack_to_file(AntbEngine* engine, const char* path);
 AGB_API int antb_dump_last_js_stack_to_file(const char* path);
+
+/* Legacy text codecs (gbk / big5 / shift_jis / ...) for TextDecoder.
+ *
+ * ant ships no CJK tables of its own. An embedder that already owns them
+ * registers a provider once, before creating engines; ant asks it for any label
+ * its built-in table does not know and routes decode through it. Passing NULL
+ * unregisters. Built-in encodings (utf-8, latin1, utf-16) never consult it.
+ *
+ *   resolve(user, label, len, out, cap) -> 1 when the label is known; writes a
+ *       NUL-terminated canonical name into out (e.g. "gbk").
+ *   decode(user, label, in, in_len, out, out_cap, fatal) -> bytes written as
+ *       UTF-8, or -1 for invalid input.
+ *
+ * Both callbacks run on the engine thread and must not call back into ant. */
+typedef struct AntbTextCodecProvider {
+    int  (*resolve)(void* user, const char* label, size_t len, char* out, size_t cap);
+    long (*decode)(void* user, const char* label,
+                   const unsigned char* in, size_t in_len,
+                   char* out, size_t out_cap, int fatal);
+    void* user;
+} AntbTextCodecProvider;
+
+AGB_API void antb_set_text_codec_provider(const AntbTextCodecProvider* provider);
 
 /* Host-driven abort of a stuck page script (Reload/Stop while a loop never
  * returns). Safe from any thread; the VM raises a termination error that page

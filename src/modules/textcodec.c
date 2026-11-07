@@ -15,6 +15,18 @@
 
 static constexpr uint32_t TEXT_DECODER_NATIVE_TAG = Ant_NativeTag("TDEC");
 
+/* Set by the embedder (see td_provider_t in modules/textcodec.h). NULL means
+ * "ant's own table is all there is". */
+static const td_provider_t *g_td_provider = NULL;
+
+void td_set_provider(const td_provider_t *provider) {
+  g_td_provider = provider;
+}
+
+const td_provider_t *td_get_provider(void) {
+  return g_td_provider;
+}
+
 td_state_t *td_state_new(td_encoding_t enc, bool fatal, bool ignore_bom) {
   td_state_t *st = calloc(1, sizeof(td_state_t));
   if (!st) return NULL;
@@ -34,9 +46,9 @@ static void td_finalize(ant_t *js, ant_object_t *obj) {
   js_clear_native(value, TEXT_DECODER_NATIVE_TAG);
 }
 
-static int resolve_encoding(const char *s, size_t len) {
-  static const struct { const char *label; uint8_t len; td_encoding_t enc; } map[] = {
-    {"unicode-1-1-utf-8", 17, TD_ENC_UTF8},
+static int resolve_encoding(const char *s, size_t len, char *label_out, size_t label_cap) {
+  if (label_out && label_cap) label_out[0] = 0;
+  static const struct { const char *label; uint8_t len; td_encoding_t enc; } map[] = {    {"unicode-1-1-utf-8", 17, TD_ENC_UTF8},
     {"unicode11utf8",     13, TD_ENC_UTF8},
     {"unicode20utf8",     13, TD_ENC_UTF8},
     {"utf-8",              5, TD_ENC_UTF8},
@@ -74,6 +86,24 @@ static int resolve_encoding(const char *s, size_t len) {
   for (int i = 0; map[i].label; i++) {
     if (len == map[i].len && strncasecmp(s, map[i].label, len) == 0) return (int)map[i].enc;
   }
+
+  /* Not ours: ask the embedder's table before rejecting the label. Kept last so
+   * a host can never shadow a built-in encoding. */
+  if (g_td_provider && g_td_provider->resolve) {
+    char canonical[sizeof(((td_state_t *)0)->provider_label)];
+
+    if (g_td_provider->resolve(g_td_provider->user, s, len, canonical, sizeof(canonical)) == 1
+        && canonical[0]) {
+      if (label_out && label_cap) {
+        size_t n = strlen(canonical);
+        if (n >= label_cap) n = label_cap - 1;
+        memcpy(label_out, canonical, n);
+        label_out[n] = 0;
+      }
+      return (int)TD_ENC_PROVIDER;
+    }
+  }
+
   return -1;
 }
 
@@ -83,8 +113,17 @@ switch (enc) {
   case TD_ENC_UTF16BE:      return "utf-16be";
   case TD_ENC_WINDOWS_1252: return "windows-1252";
   case TD_ENC_ISO_8859_2:   return "iso-8859-2";
+  /* TD_ENC_PROVIDER answers from st->provider_label; never reached. */
   default:                  return "utf-8";
 }}
+
+/* Name reported by TextDecoder.prototype.encoding. Provider encodings report
+ * the canonical label their resolve() produced. */
+static const char *state_encoding_name(const td_state_t *st) {
+  if (!st) return "utf-8";
+  if (st->encoding == TD_ENC_PROVIDER && st->provider_label[0]) return st->provider_label;
+  return encoding_name(st->encoding);
+}
 
 static const char *trim_label(const char *s, size_t len, size_t *out_len) {
   while (len > 0 && (unsigned char)*s <= 0x20) { s++; len--; }
@@ -166,7 +205,7 @@ static ant_value_t js_textencoder_ctor(ant_params_t) {
 
 static ant_value_t js_textdecoder_get_encoding(ant_params_t) {
   td_state_t *st = td_get_state(js->this_val);
-  const char *name = encoding_name(st ? st->encoding : TD_ENC_UTF8);
+  const char *name = state_encoding_name(st);
   return js_mkstr(js, name, strlen(name));
 }
 
@@ -320,7 +359,23 @@ ant_value_t td_decode(ant_t *js, td_state_t *st, const uint8_t *input, size_t in
   if (!out) { free(work); return Ant_Error_CreateOutOfMemory(js); }
 
   utf8proc_ssize_t n;
-  if (st->encoding == TD_ENC_UTF16LE || st->encoding == TD_ENC_UTF16BE) {
+  if (st->encoding == TD_ENC_PROVIDER) {
+    /* The embedder owns the table. A provider that cannot answer returns -1,
+     * which becomes the same "invalid" error a bad byte would produce. */
+    n = -1;
+
+    if (g_td_provider && g_td_provider->decode) {
+      long written = g_td_provider->decode(
+        g_td_provider->user, st->provider_label,
+        src, total, out, total * 3 + 1, st->fatal
+      );
+
+      if (written >= 0) n = (utf8proc_ssize_t)written;
+    }
+
+    st->pending_len = 0;
+    st->bom_seen = false;
+  } else if (st->encoding == TD_ENC_UTF16LE || st->encoding == TD_ENC_UTF16BE) {
     n = utf16_decode(st, src, total, out, stream_mode);
   } else if (st->encoding == TD_ENC_WINDOWS_1252 || st->encoding == TD_ENC_ISO_8859_2) {
     n = decode_single_byte(st, src, total, out);
@@ -373,6 +428,7 @@ static ant_value_t js_textdecoder_ctor(ant_params_t) {
     return js_mkerr_typed(js, JS_ERR_TYPE, "TextDecoder constructor requires 'new'");
 
   td_encoding_t enc = TD_ENC_UTF8;
+  char provider_label[sizeof(((td_state_t *)0)->provider_label)] = {0};
   if (nargs > 0 && !is_undefined(args[0])) {
   ant_value_t label = (vtype(args[0]) == kTypeString) ? args[0] : coerce_to_str(js, args[0]);
   if (is_err(label)) return label;
@@ -382,7 +438,7 @@ static ant_value_t js_textdecoder_ctor(ant_params_t) {
   if (raw) {
     size_t tlen;
     const char *trimmed = trim_label(raw, llen, &tlen);
-    int resolved = resolve_encoding(trimmed, tlen);
+    int resolved = resolve_encoding(trimmed, tlen, provider_label, sizeof(provider_label));
     
     if (resolved < 0) return js_mkerr_typed(
       js, JS_ERR_RANGE, "Failed to construct 'TextDecoder': The encoding label provided ('%.*s') is invalid.",
@@ -406,6 +462,7 @@ static ant_value_t js_textdecoder_ctor(ant_params_t) {
 
   td_state_t *st = td_state_new(enc, fatal, ignore_bom);
   if (!st) return Ant_Error_CreateOutOfMemory(js);
+  if (enc == TD_ENC_PROVIDER) memcpy(st->provider_label, provider_label, sizeof(st->provider_label));
 
   ant_value_t obj = Ant_Object_CreateBare(js);
   ant_value_t proto = js_instance_proto_from_new_target(js, js->builtins.textdecoder_proto, call_new_target);

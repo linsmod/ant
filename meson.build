@@ -433,6 +433,15 @@ gc_plain_arrays_test = executable(
 )
 test('gc-plain-arrays', gc_plain_arrays_test)
 
+text_codec_provider_test = executable(
+  'test-text-codec-provider',
+  files('tests/test_text_codec_provider.c'),
+  dependencies: libant_dep,
+  c_args: ['-UNDEBUG'],
+  build_by_default: false
+)
+test('text-codec-provider', text_codec_provider_test)
+
 gc_shape_refs_test = executable(
   'test-gc-shape-refs',
   files('tests/test_gc_shape_refs.c'),
