@@ -190,6 +190,7 @@ AGB_API char* antb_to_utf8(const AntbValue* value);
 
 AGB_API int antb_is_number(const AntbValue* value);
 AGB_API int antb_is_string(const AntbValue* value);
+AGB_API int antb_is_boolean(const AntbValue* value);
 AGB_API int antb_is_function(const AntbValue* value);
 /* 1 when both wrappers refer to the same JS value (used by removeEventListener). */
 AGB_API int antb_value_same(const AntbValue* a, const AntbValue* b);
@@ -206,6 +207,9 @@ AGB_API AntbValue* antb_make_string(AntbEngine* engine, const char* utf8);
 
 /* Creates a JS number. */
 AGB_API AntbValue* antb_make_number(AntbEngine* engine, double v);
+
+/* Creates a JS boolean (true/false, not 1/0). */
+AGB_API AntbValue* antb_make_boolean(AntbEngine* engine, int v);
 
 /* Creates the JS null value (history.state is null, not undefined). */
 AGB_API AntbValue* antb_make_null(AntbEngine* engine);

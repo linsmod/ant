@@ -634,6 +634,11 @@ int antb_is_string(const AntbValue* value)
     return value && value->js && vtype(value->v) == kTypeString;
 }
 
+int antb_is_boolean(const AntbValue* value)
+{
+    return value && value->js && vtype(value->v) == kTypeBool;
+}
+
 /* Identity test for two wrappers: removeEventListener gets back the same
  * function object the page registered, and must not remove a different one. */
 int antb_value_same(const AntbValue* a, const AntbValue* b)
@@ -744,6 +749,13 @@ AntbValue* antb_make_number(AntbEngine* engine, double v)
     if (!engine || !engine->js)
         return NULL;
     return alloc_value(engine->js, js_mknum(v));
+}
+
+AntbValue* antb_make_boolean(AntbEngine* engine, int v)
+{
+    if (!engine || !engine->js)
+        return NULL;
+    return alloc_value(engine->js, js_bool(v ? true : false));
 }
 
 AntbValue* antb_make_array(AntbEngine* engine)
