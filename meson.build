@@ -345,6 +345,19 @@ realm_modules_test = executable(
 )
 test('realm-modules', realm_modules_test, timeout: 120)
 
+# The global IC must keep caching plain data slots when the global object is
+# exotic (a browser window with a catch-all getter). A name the object lacks is
+# never cached, so the getter still decides every missing property.
+exotic_global_ic_test = executable(
+  'test-exotic-global-ic',
+  files('tests/test_exotic_global_ic.c'),
+  include_directories: [include, include_directories('src')],
+  dependencies: libant_dep,
+  c_args: ['-std=gnu23', '-UNDEBUG'],
+  build_by_default: false
+)
+test('exotic-global-ic', exotic_global_ic_test, timeout: 120)
+
 # P1-g: dense/sparse element access semantics + js_index_get_fast() declining
 # what it cannot answer (accessors, prototype indices, deleted slots).
 index_elem_test = executable(

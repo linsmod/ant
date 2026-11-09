@@ -181,7 +181,13 @@ static inline bool sv_global_ic_try_get_hit(
   if (!ic || !interned) return false;
 
   ant_object_t *gptr = sv_global_obj_ptr(target);
-  if (!gptr || gptr->flags.is_exotic || !gptr->shape) return false;
+  /* An exotic global (a window object with a catch-all getter) may still use
+   * the IC for a name that resolves to a plain data slot: js_getprop_fallback_
+   * len() looks the own slot up before it ever consults the exotic getter, so
+   * the cached slot value is exactly what a miss-free read returns. Only
+   * positive data-slot entries are filled (sv_global_ic_try_fill below), never
+   * a miss, so the getter keeps deciding every property the object lacks. */
+  if (!gptr || !gptr->shape) return false;
   if (ic->epoch != js->ic.epoch) return false;
   if (ic->cached_shape != gptr->shape) return false;
   if (ic->cached_index >= gptr->prop_count) return false;
@@ -218,7 +224,7 @@ static inline bool sv_global_ic_try_fill(
   if (!ic || !interned) return false;
 
   ant_object_t *gptr = sv_global_obj_ptr(target);
-  if (!gptr || gptr->flags.is_exotic || !gptr->shape) return false;
+  if (!gptr || !gptr->shape) return false;
 
   int32_t slot = ant_shape_lookup_interned(gptr->shape, interned);
   if (slot < 0) return false;
