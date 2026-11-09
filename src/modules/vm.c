@@ -401,7 +401,11 @@ ant_value_t js_dynamic_import_from(ant_t *js, ant_value_t specifier, ant_value_t
 ant_value_t js_vm_dynamic_import(ant_t *js, sv_code_unit_t *unit, ant_value_t specifier, ant_value_t options) {
   ant_value_t handler = unit->import_handler;
   
-  if (handler == js->builtins.vm_main_context_loader) {
+  /* `handler &&`: a realm whose builtins were not initialized yet has both the
+   * unit handler and the sentinel at 0, and comparing 0 == 0 would send the
+   * import down the vm-context path (global `import`, main realm) instead of
+   * the ESM loader that owns this realm's registry. */
+  if (handler && handler == js->builtins.vm_main_context_loader) {
     ant_realm_t *main = ant_realm_main(js);
     ant_value_t global = main == js->realm ? js->global : main->global;
     ant_value_t import_fn = js_getprop_fallback(js, global, "import");

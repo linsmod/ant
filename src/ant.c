@@ -21555,6 +21555,20 @@ bool js_realm_finish_intrinsics(ant_t *js) {
 }
 
 bool js_realm_init_intrinsics(ant_t *js) {
+  /* A fresh realm starts with an empty module world. ant_realm_create() loads
+   * realm_empty into js->modules (all zero), and zero is a *number* in the NaN
+   * box, not "undefined" - give the module values their real empty values
+   * before any require/import can read them. The registry itself (state) is
+   * created lazily per realm by esm_state(). */
+  js->modules.cjs.cache = js_mkundef();
+  js->modules.cjs.parent = js_mkundef();
+  js->modules.cjs.main = js_mkundef();
+  js->modules.cjs.constructor = js_mkundef();
+  js->modules.hooks = js_mkundef();
+  js->modules.import_meta = js_mkundef();
+  js->modules.state = NULL;
+  js->modules.module_stack = NULL;
+
   realm_init_core(js);
   ant_bootstrap_realm_intrinsics(js);
   return js_realm_finish_intrinsics(js);

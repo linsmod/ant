@@ -20,8 +20,16 @@ typedef struct ant_module_t {
   struct ant_module_t *prev;
 } ant_module_t;
 
+typedef struct ant_esm_state ant_esm_state_t;
+
 void js_esm_cleanup_module_cache(ant_t *js);
 void js_esm_invalidate_files(ant_t *js);
+
+/* Frees one realm's module registry (module records + resolve/package caches).
+ * Every realm owns its own ant_esm_state: a realm that goes away must release
+ * it (realm_free), and js_destroy() releases the current realm's through
+ * js_esm_cleanup_module_cache(). */
+void esm_state_free(ant_esm_state_t *st);
 
 ant_value_t js_esm_make_file_url(ant_t *js, const char *path);
 const char *esm_platform_condition(ant_t *js);

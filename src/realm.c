@@ -7,6 +7,7 @@
 #include "internal.h"
 #include "handles.h"
 #include "gc/modules.h"
+#include "esm/loader.h"   /* esm_state_free: per-realm module registry */
 #include "silver/call.h"
 #include "silver/jit.h"
 
@@ -31,7 +32,7 @@ static void realm_save(ant_t *js, ant_realm_t *realm) {
   
   #define ANT_REALM_FIELD(name) realm->name = js->name;
   #include "realm/fields.h"
-  
+
   realm->sym.eval_fn = js->sym.eval_fn;
   realm->builtins.callsite_proto = js->builtins.callsite_proto;
 
@@ -154,6 +155,20 @@ static void realm_mark_one(ant_t *js, ant_realm_t *realm, void (*mark)(ant_t *js
   #define ANT_REALM_MUTABLE_ROOT_ARR(name, n) \
     for (size_t i = 0; i < n; i++) mark(js, realm->mutable_roots.name[i]);
   #include "isolate_values.h"
+
+  /* The realm's module world: its ESM/require caches hold values that are only
+   * reachable from here (the current realm's copies live in js-> and are marked
+   * with the isolate). */
+  mark(js, realm->modules.cjs.cache);
+  mark(js, realm->modules.cjs.parent);
+  mark(js, realm->modules.cjs.main);
+  mark(js, realm->modules.cjs.constructor);
+  for (uint32_t i = 0; i < CJS_BUILTIN_CACHE_SIZE; i++) {
+    mark(js, realm->modules.cjs.builtins[i].specifier);
+    mark(js, realm->modules.cjs.builtins[i].exports);
+  }
+  mark(js, realm->modules.hooks);
+  mark(js, realm->modules.import_meta);
 }
 
 static inline bool realm_has_jobs(const ant_realm_t *realm) {
@@ -199,6 +214,15 @@ static void realm_free(ant_t *js, ant_realm_t *realm) {
     free(realm->global_lexicals);
     free(realm->global_lexical_index);
     free(realm->iterators.entries);
+  }
+
+  /* The realm's module registry is plain heap state (not a GC object): the
+   * current realm's copy is freed by js_esm_cleanup_module_cache() in
+   * js_destroy(), which also clears js->realm->modules.state so this cannot
+   * free it twice. */
+  if (realm->modules.state) {
+    esm_state_free(realm->modules.state);
+    realm->modules.state = NULL;
   }
   
   ant_cfunc_release_realm(realm);

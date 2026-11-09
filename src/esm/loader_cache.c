@@ -2,6 +2,7 @@
 #include "loader_cache.h"
 
 #include "internal.h"
+#include "realm.h"   /* ant_realm_main: a new realm inherits the engine's VFS bundle */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -42,10 +43,20 @@ typedef struct esm_package_dir_cache_entry {
 
 ant_esm_state_t *esm_state(ant_t *js) {
   if (!js) return NULL;
-  if (js->modules.state) return js->modules.state;
+  if (js->modules.state)
+    return js->modules.state;
 
   ant_esm_state_t *st = calloc(1, sizeof(*st));
   if (!st) return NULL;
+
+  /* The embedded VFS bundle belongs to the engine, not to a realm: a realm
+   * created later (iframe, vm context) still resolves embedded modules. */
+  {
+    ant_realm_t *main = ant_realm_main(js);
+
+    if (main && main != js->realm && main->modules.state)
+      st->bundle = main->modules.state->bundle;
+  }
 
   js->modules.state = st;
   return st;
@@ -268,10 +279,9 @@ yyjson_doc *esm_package_json_cache_read(ant_t *js, const char *pkg_json_path, bo
   return entry->doc;
 }
 
-void esm_loader_cache_cleanup(ant_t *js) {
-  ant_esm_state_t *st = js ? js->modules.state : NULL;
-  if (!st) return;
-
+/* Frees one realm's registry. Callers that operate on the current realm use
+ * esm_loader_cache_cleanup(), which also clears the realm mirror. */
+void esm_state_free(ant_esm_state_t *st) {
   esm_package_json_cache_entry_t *pkg_current, *pkg_tmp;
   HASH_ITER(hh, st->package_json_cache, pkg_current, pkg_tmp) {
     HASH_DEL(st->package_json_cache, pkg_current);
@@ -313,5 +323,16 @@ void esm_loader_cache_cleanup(ant_t *js) {
   }
 
   free(st);
+}
+
+void esm_loader_cache_cleanup(ant_t *js) {
+  ant_esm_state_t *st = js ? js->modules.state : NULL;
+  if (!st) return;
+
+  esm_state_free(st);
   js->modules.state = NULL;
+
+  /* Keep the current realm's mirror in sync: it may hold the same pointer from
+   * the last realm_save(), and realm_free() must not free it again. */
+  if (js->realm) js->realm->modules.state = NULL;
 }

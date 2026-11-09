@@ -18,5 +18,10 @@ ANT_REALM_FIELD(array_iteration_protector_invalid)
 ANT_REALM_FIELD(promise_then_protector_invalid)
 ANT_REALM_FIELD(regexp)
 ANT_REALM_FIELD(iterators)
+/* The module world belongs to the realm: ESM registry (js->modules.state), the
+ * require/import caches and the module evaluation stack are per realm, so two
+ * frames importing the same URL each get their own module instance (the HTML
+ * spec's module map is per environment settings object). */
+ANT_REALM_FIELD(modules)
 #undef ANT_REALM_FIELD
 #endif

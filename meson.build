@@ -333,6 +333,18 @@ bridge_interrupt_test = executable(
 )
 test('bridge-interrupt', bridge_interrupt_test, timeout: 120)
 
+# The ES module registry belongs to the realm (HTML module map is per environment
+# settings object): the same URL imported by two realms runs once per realm.
+realm_modules_test = executable(
+  'test-realm-modules',
+  files('tests/test_realm_modules.c', 'bridge/AntBridge.c'),
+  include_directories: [include, include_directories('bridge')],
+  dependencies: libant_dep,
+  c_args: ['-std=gnu23', '-UNDEBUG'],
+  build_by_default: false
+)
+test('realm-modules', realm_modules_test, timeout: 120)
+
 # P1-g: dense/sparse element access semantics + js_index_get_fast() declining
 # what it cannot answer (accessors, prototype indices, deleted slots).
 index_elem_test = executable(
