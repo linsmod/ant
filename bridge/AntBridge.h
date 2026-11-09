@@ -187,6 +187,14 @@ AGB_API const char* antb_last_call(void);
  * removes it. */
 AGB_API void antb_set_context_activate(void (*fn)(AntbEngine* engine));
 
+/* Installs the matching hook that runs after that callback returns, before the
+ * JS value is handed back. ant restores its own realm after the call, but the
+ * host's derived state (the current document of a per-view/per-frame binding)
+ * is switched *before* the callback and would otherwise stay on the callee's
+ * realm: enter/leave must be paired so the host can restore it. NULL removes
+ * it. */
+AGB_API void antb_set_context_leave(void (*fn)(AntbEngine* engine));
+
 /* ---- value inspection --------------------------------------------------- */
 
 AGB_API double antb_to_number(const AntbValue* value);

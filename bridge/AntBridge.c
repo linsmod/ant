@@ -907,9 +907,20 @@ static int g_trace_calls = -1;
  * method; lets the host switch to that engine's JS context (per-view contexts). */
 static void (*g_context_activate)(AntbEngine* engine) = NULL;
 
+/* Runs after that callback returns: the host restores whatever derived binding
+ * state it switched in g_context_activate. ant restores its own realm after the
+ * call, but the host cannot see that moment, so the pair has to bracket the
+ * callback itself. */
+static void (*g_context_leave)(AntbEngine* engine) = NULL;
+
 void antb_set_context_activate(void (*fn)(AntbEngine* engine))
 {
     g_context_activate = fn;
+}
+
+void antb_set_context_leave(void (*fn)(AntbEngine* engine))
+{
+    g_context_leave = fn;
 }
 
 /* Returns a malloc'd description of a pending exception and clears it, or NULL
@@ -2292,8 +2303,18 @@ static ant_value_t agb_dispatch(int slot, ant_t* js, ant_value_t* args, int narg
     out_v.js = js;
     out_v.v  = js_mkundef();
 
-    if (!e->fn(e->engine, self_p, arg_ptrs, n, &out_v, e->user))
-        return js_mkundef();
+    {
+        int handled = e->fn(e->engine, self_p, arg_ptrs, n, &out_v, e->user);
+
+        /* Paired with g_context_activate above, on both paths: the host has to
+         * put its document/realm binding back before the JS that called this
+         * method continues. */
+        if (g_context_leave)
+            g_context_leave(e->engine);
+
+        if (!handled)
+            return js_mkundef();
+    }
 
     return out_v.v;
 }

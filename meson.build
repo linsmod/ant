@@ -358,6 +358,18 @@ exotic_global_ic_test = executable(
 )
 test('exotic-global-ic', exotic_global_ic_test, timeout: 120)
 
+# Every bridged native callback is bracketed by the host's activate/leave hooks
+# (the host switches its document binding on entry and restores it on exit).
+bridge_context_hooks_test = executable(
+  'test-bridge-context-hooks',
+  files('tests/test_bridge_context_hooks.c', 'bridge/AntBridge.c'),
+  include_directories: [include, include_directories('bridge')],
+  dependencies: libant_dep,
+  c_args: ['-std=gnu23', '-UNDEBUG'],
+  build_by_default: false
+)
+test('bridge-context-hooks', bridge_context_hooks_test, timeout: 120)
+
 # P1-g: dense/sparse element access semantics + js_index_get_fast() declining
 # what it cannot answer (accessors, prototype indices, deleted slots).
 index_elem_test = executable(
