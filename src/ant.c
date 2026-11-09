@@ -22764,6 +22764,15 @@ static inline js_eval_result_t js_eval_bytecode_mode_result(
   sv_func_t *func = js_compile_parsed_bytecode(js, program, buf, len, mode, eval_env);
   parse_arena_rewind(js, parse_mark);
 
+  /* `import()` inside a classic script (or eval) resolves against the script's
+   * own URL: remember it on the unit. vm.Script units never pass through here,
+   * so they keep their explicit (or missing) callback semantics. */
+  if (func && func->unit && !func->unit->import_base_path && js->filename) {
+    const char *base = intern_string(js, js->filename, strlen(js->filename));
+
+    if (base) func->unit->import_base_path = base;
+  }
+
   if (!func) {
     ant_value_t value = Ant_Exception_Pending(js)
       ? Ant_Exception_Current(js)

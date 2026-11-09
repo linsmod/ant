@@ -22,6 +22,7 @@
 #include "modules/timer.h"
 #include "modules/buffer.h"
 #include "modules/collections.h"
+#include "esm/loader.h"
 
 typedef struct {
   const char *filename;
@@ -374,6 +375,29 @@ static ant_value_t vm_import_referrer(sv_code_unit_t *unit) {
   return js_weakref_target(unit->import_referrer, &script) ? script : unit->import_referrer;
 }
 
+/* Dynamic `import()` for code that has a base URL but no explicit import
+ * callback: a classic <script> or an eval'd script. Resolves through the
+ * ordinary ESM loader and returns the promise the spec requires. */
+ant_value_t js_dynamic_import_from(ant_t *js, ant_value_t specifier, ant_value_t options, const char *base_path) {
+  ant_value_t promise = js_mkpromise(js);
+  ant_value_t attrs = is_object_type(options) ? js_get(js, options, "with") : js_mkundef();
+  ant_value_t tla = js_mkundef();
+  ant_value_t outcome;
+
+  GC_ROOT_SAVE(mark, js);
+  GC_ROOT_PIN(js, promise);
+
+  if (!is_object_type(attrs)) attrs = Ant_Object_CreateBare(js);
+
+  outcome = js_esm_import_dynamic_ex(js, specifier, base_path, attrs, &tla);
+
+  if (is_err(outcome)) js_reject_promise(js, promise, js_take_thrown(js, outcome));
+  else js_resolve_promise(js, promise, vtype(tla) == kTypePromise ? tla : outcome);
+
+  GC_ROOT_RESTORE(js, mark);
+  return promise;
+}
+
 ant_value_t js_vm_dynamic_import(ant_t *js, sv_code_unit_t *unit, ant_value_t specifier, ant_value_t options) {
   ant_value_t handler = unit->import_handler;
   
@@ -398,6 +422,15 @@ ant_value_t js_vm_dynamic_import(ant_t *js, sv_code_unit_t *unit, ant_value_t sp
     
     ant_value_t argv[3] = { name, vm_import_referrer(unit), attributes };
     outcome = is_err(name) ? name : sv_vm_call(js->vm, js, handler, js_mkundef(), argv, 3, NULL, js_mkundef());
+  } else if (unit->import_base_path) {
+    /* A script compiled through the eval path (a classic <script>, eval): no
+     * explicit callback, but the host compiled it with a filename, so `import()`
+     * resolves relative to it through the ordinary ESM loader - the browser
+     * semantics. (vm.Script units have no base path and keep rejecting.) */
+    ant_value_t resolved = js_dynamic_import_from(js, specifier, options, unit->import_base_path);
+
+    GC_ROOT_RESTORE(js, mark);
+    return resolved;
   } else outcome = js_mkerr_code(
     js, JS_ERR_TYPE, "ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING",
     "A dynamic import callback was not specified."

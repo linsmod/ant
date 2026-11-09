@@ -113,6 +113,7 @@ export function targets() {
     'test_disposal_error_values.cjs',
     'test_duplicate_declarations.cjs',
     'test_dynamic_import_builtin_default.mjs',
+    'test_dynamic_import_script_base.js',
     'test_arguments_not_array.cjs',
     'test_object_spread_semantics.cjs',
     'test_define_properties_semantics.cjs',

@@ -21,6 +21,12 @@ struct sv_code_unit {
   ant_value_t *compile_roots;
   ant_value_t import_handler;
   ant_value_t import_referrer;
+  /* Base URL for `import()` in scripts that have no explicit handler (classic
+   * <script>, eval): set at compile time from the current filename, so a
+   * dynamic import resolves relative to the script that contains it. NULL for
+   * vm.Script-created units, which must keep rejecting with
+   * ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING when no callback was given. */
+  const char *import_base_path;
 
   uint64_t gc_epoch;
   size_t block_count, block_cap;

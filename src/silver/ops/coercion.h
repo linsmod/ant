@@ -103,8 +103,26 @@ static inline void sv_op_is_null(sv_vm_t *vm) {
 }
 
 static inline ant_value_t sv_op_import(sv_vm_t *vm, ant_t *js, sv_func_t *func) {
-  if (__builtin_expect(func->unit && func->unit->import_handler, 0)) {
+  /* A unit with an import handler *or* a base path owns its dynamic imports:
+   * the eval path records the script's URL (import_base_path) so `import()` in
+   * a classic <script> resolves against it through the ESM loader. Without a
+   * base path (vm.Script) the host/global `import` fallback stays in charge. */
+  if (__builtin_expect(func->unit && (func->unit->import_handler || func->unit->import_base_path), 0)) {
     ant_value_t result = js_vm_dynamic_import(js, func->unit, vm->stack[vm->sp - 2], vm->stack[vm->sp - 1]);
+
+    vm->sp -= 2;
+    if (!is_err(result)) vm->stack[vm->sp++] = result;
+    return result;
+  }
+
+  /* Eval'd classic script (no code unit): its functions still know the script
+   * URL they were compiled from (`debug->filename`), which is the base URL
+   * `import()` must resolve against. vm.Script code never reaches here (its
+   * unit exists), so Node's "callback missing" semantics are untouched. */
+  if (!func->unit && func->debug && func->debug->filename && func->debug->filename[0]) {
+    ant_value_t result = js_dynamic_import_from(js, vm->stack[vm->sp - 2], vm->stack[vm->sp - 1],
+                                                func->debug->filename);
+
     vm->sp -= 2;
     if (!is_err(result)) vm->stack[vm->sp++] = result;
     return result;
@@ -113,7 +131,6 @@ static inline ant_value_t sv_op_import(sv_vm_t *vm, ant_t *js, sv_func_t *func) 
   ant_value_t import_fn = js_get_module_import_binding(js);
   if (vtype(import_fn) != kTypeFunction && vtype(import_fn) != kTypeBuiltin)
     import_fn = js_getprop_fallback(js, js->global, "import");
-
   if (vtype(import_fn) == kTypeFunction || vtype(import_fn) == kTypeBuiltin) {
     ant_value_t result = sv_vm_call(
       vm, js, import_fn, js->global,
