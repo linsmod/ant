@@ -504,7 +504,22 @@ static ant_value_t js_atomics_wait(ant_params_t) {
   
   const char *result = "ok";
   if (timeout_ms < 0) {
-    while (!entry.notified && !js_interrupt_pending(js)) pthread_cond_wait(&entry.cond, &entry.mutex);
+    /* No timeout: wait in 100 ms slices instead of a plain condvar wait. The
+     * host's "stop this script" request only sets interrupt_pending from another
+     * thread; nothing signals this condvar, so an unbounded pthread_cond_wait()
+     * made Atomics.wait() truly uninterruptible (the browser watchdog flag was
+     * set and then never looked at again). */
+    struct timespec slice;
+
+    while (!entry.notified && !js_interrupt_pending(js)) {
+      clock_gettime(CLOCK_REALTIME, &slice);
+      slice.tv_nsec += 100 * 1000000L;
+      if (slice.tv_nsec >= 1000000000L) {
+        slice.tv_sec++;
+        slice.tv_nsec -= 1000000000L;
+      }
+      pthread_cond_timedwait(&entry.cond, &entry.mutex, &slice);
+    }
   } else {
     struct timespec ts;
     clock_gettime(CLOCK_REALTIME, &ts);

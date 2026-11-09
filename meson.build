@@ -318,6 +318,21 @@ bridge_method_slots_test = executable(
 )
 test('bridge-method-slots', bridge_method_slots_test)
 
+# The host abort path runs from another thread. Atomics.wait() without a timeout
+# must observe it (a plain condvar wait blocked forever), and the engine table
+# must survive create/destroy racing with antb_engines_js_depth() /
+# antb_interrupt_all_engines() scans (destroy used to free the isolate under a
+# scanning thread).
+bridge_interrupt_test = executable(
+  'test-bridge-interrupt',
+  files('tests/test_bridge_interrupt.c', 'bridge/AntBridge.c'),
+  include_directories: [include, include_directories('bridge')],
+  dependencies: libant_dep,
+  c_args: ['-std=gnu23', '-UNDEBUG'],
+  build_by_default: false
+)
+test('bridge-interrupt', bridge_interrupt_test, timeout: 120)
+
 # P1-g: dense/sparse element access semantics + js_index_get_fast() declining
 # what it cannot answer (accessors, prototype indices, deleted slots).
 index_elem_test = executable(

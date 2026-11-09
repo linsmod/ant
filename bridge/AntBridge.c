@@ -26,7 +26,7 @@
 #include "ptr.h"        /* js_set_native / js_get_native (static inline) */
 #include "gc/roots.h"   /* gc_register_root: keep wrapper objects alive */
 #include "gc.h"         /* gc_run: forced collection in tests */
-#include "interrupt.h"  /* sv_jit_arm_interrupts: host-driven script abort */
+#include "interrupt.h"  /* sv_jit_arm_interrupts: arming happens in antb_engine_create only */
 
 /* Optional host-provided diagnostics. The bridge must not include the
  * embedder's logging header: antjsb is built inside the ant tree. */
@@ -43,10 +43,30 @@ static int g_call_debug = -1;
  * the engine thread is currently running - so set it on all of them. Only the
  * engine whose code is inside a loop can observe it; the others are parked in
  * the reactor. The flag is cleared at the start of every top-level eval, so a
- * request that races with the end of the script cannot kill the next page. */
+ * request that races with the end of the script cannot kill the next page.
+ *
+ * Threading: registration/unregistration happen on the engine thread, the
+ * scans run on the watchdog/UI thread. Everything (the scan *and* the field
+ * accesses it makes) is done under g_enginesLock, and antb_engine_destroy()
+ * unlinks the engine under that lock before it tears anything down: a reader
+ * can never hold a pointer to an engine that is already being freed. The
+ * critical sections are a few pointer reads/one atomic store. */
 static AntbEngine* g_engines[32];
 static void antb_begin_top_level(ant_t* js);
 static int g_engineCount = 0;
+static atomic_flag g_enginesLock = ATOMIC_FLAG_INIT;
+
+static void engines_lock(void)
+{
+    while (atomic_flag_test_and_set_explicit(&g_enginesLock, memory_order_acquire)) {
+        /* spin: the holder is only scanning a handful of slots */
+    }
+}
+
+static void engines_unlock(void)
+{
+    atomic_flag_clear_explicit(&g_enginesLock, memory_order_release);
+}
 
 static AntbValue* alloc_value(ant_t* js, ant_value_t v);
 
@@ -193,8 +213,12 @@ AntbEngine* antb_engine_create(const void* stack_anchor)
     }
 
     g_lastEngine = e;
+
+    engines_lock();
     if (g_engineCount < (int)(sizeof(g_engines) / sizeof(g_engines[0])))
         g_engines[g_engineCount++] = e;
+    engines_unlock();
+
     return e;
 }
 
@@ -206,11 +230,16 @@ void antb_engine_destroy(AntbEngine* engine)
     if (g_lastEngine == engine)
         g_lastEngine = NULL;
 
+    /* Unlink before any teardown: a concurrent antb_interrupt_all_engines() /
+     * antb_engines_js_depth() must not be able to reach an engine whose js is
+     * about to be destroyed. */
+    engines_lock();
     for (int i = 0; i < g_engineCount; ++i) {
         if (g_engines[i] != engine) continue;
         g_engines[i] = g_engines[--g_engineCount];
         break;
     }
+    engines_unlock();
 
     /* The wrapper, class and native-method tables are process wide. An engine
      * that goes away must take its entries with it: a stale js pointer, a
@@ -401,34 +430,51 @@ void antb_print_last_js_stack(void)
 /* Host-driven abort of a stuck page script: the browser's Reload/Stop while a
  * page loop never returns. The VM polls interrupt_pending in interpreter calls
  * and at JIT loop backedges, raises a termination error page code cannot catch,
- * and unwinds to the host eval; arming makes already-compiled JIT code poll it
- * too. Callable from any thread (atomic store); engines that are not executing
- * anything simply carry the flag, and the next top-level eval clears it. */
+ * and unwinds to the host eval. Callable from any thread (atomic store); engines
+ * that are not executing anything simply carry the flag, and the next top-level
+ * eval clears it.
+ *
+ * Deliberately does NOT (re-)arm the JIT here: arming happens once, on the
+ * engine thread, in antb_engine_create(). sv_jit_arm_interrupts() is not a
+ * bit-set - it calls jit_drop_all_code(), which frees the code pages the engine
+ * thread may be executing right now. Calling it from the watchdog/UI thread was
+ * a latent cross-thread use-after-free (harmless today only because the armed
+ * flag made it return early).
+ *
+ * Worker isolates are not in g_engines[]: they have their own terminate(). */
 void antb_interrupt_all_engines(void)
 {
+    engines_lock();
+
     for (int i = 0; i < g_engineCount; ++i) {
         AntbEngine* engine = g_engines[i];
         if (!engine || !engine->js) continue;
-        sv_jit_arm_interrupts(engine->js);
         atomic_store_explicit(&engine->js->interrupt_pending, 1, memory_order_relaxed);
     }
+
+    engines_unlock();
 }
 
 /* How deep the VM's JS call stack is right now (0 = no JS executing). Ant uses
  * the very same field to tell whether it is at a job boundary
  * (src/modules/timer.c: `At_job_boundary = js->vm_exec_depth == 0`), so this is
  * literally "is a page script on the stack". The host polls it from another
- * thread: a single uint32 field read, and the caller only compares against
- * zero, so a torn value is not a concern. */
+ * thread; the read happens under the engine-table lock so a concurrent
+ * antb_engine_destroy() cannot free the isolate under it (a torn value was
+ * never a concern - the caller only compares against zero). */
 unsigned int antb_engines_js_depth(void)
 {
     unsigned int depth = 0;
+
+    engines_lock();
 
     for (int i = 0; i < g_engineCount; ++i) {
         AntbEngine* engine = g_engines[i];
         if (!engine || !engine->js) continue;
         if (engine->js->vm_exec_depth > depth) depth = engine->js->vm_exec_depth;
     }
+
+    engines_unlock();
 
     return depth;
 }
