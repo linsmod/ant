@@ -3,6 +3,7 @@
 #include "escape.h"
 #include "ascii.h"
 #include "esm/remote.h"
+#include "esm/loader.h"
 #include "modules/http.h"
 #include "reactor.h"
 #include "isolate.h"
@@ -421,6 +422,13 @@ char *esm_resolve(ant_t *js, const char *specifier, const char *base_path, char 
   if (esm_is_data_url(specifier)) return strdup(specifier);
   
   if (esm_is_url(specifier) || esm_is_url(base_path)) {
+    /* The document's import map is the only browser-defined resolution for a
+     * bare specifier on a URL base: without this the specifier came back
+     * unchanged and was opened as a relative file ("Cannot open module:
+     * react"). Non-bare specifiers are handled entirely by esm_resolve_url. */
+    char *mapped = esm_import_map_apply(specifier, base_path);
+    if (mapped) return mapped;
+
     char *resolved = esm_resolve_url(specifier, base_path);
     if (resolved && base_path && strncmp(base_path, "https://", 8) == 0 && strncmp(resolved, "http://", 7) == 0) {
       free(resolved);

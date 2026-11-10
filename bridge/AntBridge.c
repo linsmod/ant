@@ -663,6 +663,13 @@ void antb_set_module_fetcher(AntbModuleFetcher fn)
     esm_set_http_fetch((esm_http_fetch_fn)fn);
 }
 
+/* Browser import maps: a host-provided resolver for bare module specifiers
+ * (agave passes the current document's parsed <script type="importmap">). */
+void antb_set_import_map_resolver(AntbImportMapResolver fn)
+{
+    esm_set_import_map_resolver((esm_import_map_resolve_fn)fn);
+}
+
 double antb_to_number(const AntbValue* value)
 {
     if (!value)

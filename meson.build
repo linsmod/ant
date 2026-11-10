@@ -370,6 +370,19 @@ bridge_context_hooks_test = executable(
 )
 test('bridge-context-hooks', bridge_context_hooks_test, timeout: 120)
 
+# Browser import maps: the host resolves bare module specifiers through the
+# document's <script type="importmap"> before any package lookup (GitHub's
+# `import ... from "react"` dies as "Cannot open module: react" without it).
+bridge_import_map_test = executable(
+  'test-bridge-import-map',
+  files('tests/test_bridge_import_map.c', 'bridge/AntBridge.c'),
+  include_directories: [include, include_directories('bridge')],
+  dependencies: libant_dep,
+  c_args: ['-std=gnu23', '-UNDEBUG'],
+  build_by_default: false
+)
+test('bridge-import-map', bridge_import_map_test, timeout: 120)
+
 # P1-g: dense/sparse element access semantics + js_index_get_fast() declining
 # what it cannot answer (accessors, prototype indices, deleted slots).
 index_elem_test = executable(

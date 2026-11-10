@@ -76,3 +76,20 @@ char *esm_http_fetch_call(const char *url, size_t *out_size);
 /* Name a module gets in stack frames while it evaluates. data: URLs carry the
  * source itself, so they are reduced to a short stable label. */
 const char *esm_frame_filename(ant_t *js, const char *path);
+
+/* --- browser import maps ------------------------------------------------- */
+/* Resolves one *bare* specifier through the current document's
+ * <script type="importmap">. `base` is the importing module's URL. The embedder
+ * returns a malloc'd, fully resolved URL (or NULL when its map has no matching
+ * entry, or when the host has no map at all); the engine then falls back to its
+ * normal resolution. Relative/absolute/#/URL specifiers never reach the hook -
+ * the HTML standard resolves those against the base URL without the map.
+ *
+ * The hook runs on the engine thread, inside module resolution. It must not
+ * call back into ant (no JS, no eval) - only do host bookkeeping/joins. */
+typedef char *(*esm_import_map_resolve_fn)(const char *specifier, const char *base);
+void esm_set_import_map_resolver(esm_import_map_resolve_fn fn);
+
+/* The engine-side wrapper: filters non-bare specifiers, ignores an empty
+ * answer, and returns a malloc'd resolved specifier or NULL. */
+char *esm_import_map_apply(const char *specifier, const char *base);

@@ -169,6 +169,17 @@ AGB_API unsigned int antb_engines_js_depth(void);
 AGB_API extern char antb_dump_path[512];
 AGB_API void antb_set_module_fetcher(AntbModuleFetcher fn);
 
+/* Browser import maps: resolves *bare* module specifiers through the current
+ * document's <script type="importmap">. `base` is the importing module's URL;
+ * the resolver returns a malloc'd, fully resolved URL, or NULL when its map has
+ * no matching entry (the engine then uses its own resolution).
+ *
+ * Install once, before creating engines. The resolver runs on the engine thread
+ * inside module resolution and must not call back into ant (no JS/eval) - a
+ * host looks up its per-document map and joins the URL itself. */
+typedef char* (*AntbImportMapResolver)(const char* specifier, const char* base);
+AGB_API void antb_set_import_map_resolver(AntbImportMapResolver fn);
+
 /* Name used in stack traces for the next evaluations (usually the script URL). */
 AGB_API void antb_set_filename(AntbEngine* engine, const char* name);
 

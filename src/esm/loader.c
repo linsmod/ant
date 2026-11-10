@@ -1315,6 +1315,13 @@ static char *esm_resolve_path_cond_unmapped(ant_t *js, const char *specifier, co
     return esm_resolve_package_imports(js, specifier, base_path, prefer_require);
   }
 
+  /* A host import map (browser <script type="importmap">) owns bare specifiers
+   * when it has an entry; Node-style package lookup stays the fallback. */
+  {
+    char *mapped = esm_import_map_apply(specifier, base_path);
+    if (mapped) return mapped;
+  }
+
   return esm_resolve_node_module_cond(js, specifier, base_path, prefer_require);
 }
 
@@ -1706,6 +1713,35 @@ bool esm_http_fetch_available(void) {
 char *esm_http_fetch_call(const char *url, size_t *out_size) {
   if (!g_esm_http_fetch || !url) return NULL;
   return g_esm_http_fetch(url, out_size);
+}
+
+/* Host-provided import map (browser embedder). Kept here next to the fetcher:
+ * both are host hooks for the browser realm, installed once per process. */
+static esm_import_map_resolve_fn g_esm_import_map = NULL;
+
+void esm_set_import_map_resolver(esm_import_map_resolve_fn fn) {
+  g_esm_import_map = fn;
+}
+
+/* HTML "bare specifier": not relative, not absolute, not a fragment reference,
+ * not a URL. Only these are subject to import-map resolution. */
+static bool esm_is_bare_specifier(const char *specifier) {
+  if (!specifier || !specifier[0]) return false;
+  if (specifier[0] == '.' || specifier[0] == '/' || specifier[0] == '\\' || specifier[0] == '#') return false;
+  if (strstr(specifier, "://")) return false;
+  if (strncmp(specifier, "data:", 5) == 0) return false;
+  return true;
+}
+
+char *esm_import_map_apply(const char *specifier, const char *base) {
+  if (!g_esm_import_map || !esm_is_bare_specifier(specifier) || !base || !base[0]) return NULL;
+
+  char *mapped = g_esm_import_map(specifier, base);
+  if (mapped && !mapped[0]) {
+    free(mapped);
+    return NULL;
+  }
+  return mapped;
 }
 
 bool esm_path_is_url(const char *path) {
