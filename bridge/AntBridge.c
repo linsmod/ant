@@ -3009,7 +3009,6 @@ struct AntbClass {
     struct AntbClass* next;       /* per-engine list */
     struct AntbClass* parent;     /* interface parent, NULL for a plain class */
     ant_value_t       ctor;       /* interface object; undefined for a plain class */
-    ant_cfunc_meta_t  meta;       /* the constructor's cfunc metadata */
     struct AntbClassProp* props;  /* growable, owned */
     int               propCount;
     int               propCap;
@@ -3077,28 +3076,62 @@ static ant_value_t agb_iface_ctor(ant_params_t)
     return js_mkerr_typed(js, JS_ERR_TYPE, "Illegal constructor");
 }
 
+/* The interface constructor's cfunc metadata is keyed BY ADDRESS by ant's
+ * process-global cfunc registry (ant_cfunc_meta_intern), and registry entries
+ * are never removed. A per-class meta therefore breaks as soon as a class is
+ * freed and a later engine's calloc() reuses the address: the registry then
+ * hands back the old entry, whose name pointer belonged to the dead engine, and
+ * creating the next constructor crashed in strlen on a navigation.
+ *
+ * One meta per interface NAME, allocated once and never freed, is stable for
+ * the process; the pool is bounded by the number of interface names ever used
+ * (a few hundred at most). */
+typedef struct AgbIfaceMeta {
+    ant_cfunc_meta_t    meta;
+    char                name[64];
+    struct AgbIfaceMeta* next;
+} AgbIfaceMeta;
+
+static AgbIfaceMeta* g_ifaceMetas = NULL;
+
+static const ant_cfunc_meta_t* agb_iface_meta(const char* name)
+{
+    AgbIfaceMeta* e;
+
+    for (e = g_ifaceMetas; e; e = e->next) {
+        if (strcmp(e->name, name) == 0)
+            return &e->meta;
+    }
+
+    e = (AgbIfaceMeta*)calloc(1, sizeof(*e));
+    if (!e)
+        return NULL;
+
+    strncpy(e->name, name, sizeof(e->name) - 1);
+    e->meta.fn     = agb_iface_ctor;
+    e->meta.name   = e->name;
+    e->meta.length = 0;
+    e->meta.flags  = 0;
+    e->next        = g_ifaceMetas;
+    g_ifaceMetas   = e;
+    return &e->meta;
+}
+
 static void agb_iface_make_ctor(struct AntbClass* k)
 {
     ant_t* js = k->js;
-    const char* interned;
+    const ant_cfunc_meta_t* meta;
     ant_value_t cfunc;
     ant_value_t ctor;
 
     if (vtype(k->ctor) == kTypeFunction)
         return;
 
-    /* js_make_ctor_cfunc requires named metadata; the name must outlive the
-     * class, so point it at ant's intern table (engine lifetime). */
-    interned = intern_string(js, k->name, strlen(k->name));
-    if (!interned)
+    meta = agb_iface_meta(k->name);
+    if (!meta)
         return;
 
-    k->meta.fn     = agb_iface_ctor;
-    k->meta.name   = interned;
-    k->meta.length = 0;
-    k->meta.flags  = 0;
-
-    cfunc = js_mkfun_meta(&k->meta);
+    cfunc = js_mkfun_meta(meta);
     if (is_err(cfunc))
         return;
 
