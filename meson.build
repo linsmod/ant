@@ -332,6 +332,20 @@ bridge_class_tables_test = executable(
 )
 test('bridge-class-tables', bridge_class_tables_test, timeout: 120)
 
+# Interface bindings: parent prototype chain, constructor object (with the
+# interface name), @@toStringTag, static constants and class-level getter/
+# setter dispatch. This is the shape the DOM facade relies on for instanceof /
+# getPrototypeOf / constructor / Object.prototype.toString.
+bridge_interfaces_test = executable(
+  'test-bridge-interfaces',
+  files('tests/test_bridge_interfaces.c', 'bridge/AntBridge.c'),
+  include_directories: [include, include_directories('bridge')],
+  dependencies: libant_dep,
+  c_args: ['-std=gnu23', '-UNDEBUG'],
+  build_by_default: false
+)
+test('bridge-interfaces', bridge_interfaces_test, timeout: 120)
+
 # The host abort path runs from another thread. Atomics.wait() without a timeout
 # must observe it (a plain condvar wait blocked forever), and the engine table
 # must survive create/destroy racing with antb_engines_js_depth() /

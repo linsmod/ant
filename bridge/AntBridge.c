@@ -2662,7 +2662,8 @@ void antb_define_method(AntbEngine* engine, AntbValue* obj, const char* name,
 
 /* defined further down (class property tables) */
 static int agb_class_lookup_prop(AntbClass* k, const char* name,
-                                 AntbGetterFn* fn, void** user);
+                                 AntbGetterFn* fn, AntbSetterFn* setter,
+                                 void** user);
 
 static ant_value_t agb_getter_trampoline(ant_t* js, ant_value_t obj,
                                          const char* key, size_t klen)
@@ -2671,6 +2672,7 @@ static ant_value_t agb_getter_trampoline(ant_t* js, ant_value_t obj,
     AntbValue  self_v;
     AntbValue  out_v;
     AntbGetterFn fn = NULL;
+    AntbSetterFn setter = NULL;
     void*      user = NULL;
     char name[128];
 
@@ -2683,7 +2685,7 @@ static ant_value_t agb_getter_trampoline(ant_t* js, ant_value_t obj,
     name[klen] = '\0';
 
     if (entry->klass) {
-        if (!agb_class_lookup_prop(entry->klass, name, &fn, &user))
+        if (!agb_class_lookup_prop(entry->klass, name, &fn, &setter, &user))
             return js_mkundef();
     } else {
         fn   = entry->fn;
@@ -2708,9 +2710,12 @@ static bool agb_setter_trampoline(ant_t* js, ant_value_t obj,
 {
     agb_getter_entry* entry = (agb_getter_entry*)js_get_native(obj, AGB_TAG_GETTER);
     AntbValue self_v, val_v;
+    AntbGetterFn getter = NULL;
+    AntbSetterFn setter = NULL;
+    void* user = NULL;
     char name[128];
 
-    if (!entry || !entry->setter)
+    if (!entry)
         return false;
 
     if (klen >= sizeof(name))
@@ -2718,12 +2723,23 @@ static bool agb_setter_trampoline(ant_t* js, ant_value_t obj,
     memcpy(name, key, klen);
     name[klen] = '\0';
 
+    if (entry->klass) {
+        if (!agb_class_lookup_prop(entry->klass, name, &getter, &setter, &user))
+            return false;
+    } else {
+        setter = entry->setter;
+        user   = entry->user;
+    }
+
+    if (!setter)
+        return false;
+
     self_v.js = js;
     self_v.v  = obj;
     val_v.js  = js;
     val_v.v   = value;
 
-    return entry->setter(entry->engine, &self_v, name, &val_v, entry->user) != 0;
+    return setter(entry->engine, &self_v, name, &val_v, user) != 0;
 }
 
 void antb_define_property_rw(AntbEngine* engine, AntbValue* obj, const char* name,
@@ -2982,6 +2998,7 @@ void antb_gc(AntbEngine* engine)
 struct AntbClassProp {
     char         name[64];
     AntbGetterFn getter;
+    AntbSetterFn setter;
     void*        user;
 };
 
@@ -2990,6 +3007,9 @@ struct AntbClass {
     ant_t*            js;
     ant_value_t       proto;      /* GC root */
     struct AntbClass* next;       /* per-engine list */
+    struct AntbClass* parent;     /* interface parent, NULL for a plain class */
+    ant_value_t       ctor;       /* interface object; undefined for a plain class */
+    ant_cfunc_meta_t  meta;       /* the constructor's cfunc metadata */
     struct AntbClassProp* props;  /* growable, owned */
     int               propCount;
     int               propCap;
@@ -3042,6 +3062,137 @@ static void agbReleaseEngineClasses(AntbEngine* engine)
         }
 
         link = &k->next;
+    }
+}
+
+/* --- interfaces (DOM bindings) ------------------------------------------- */
+
+/* Every DOM interface constructor is non-constructible: WebIDL says
+ * `new HTMLElement()` throws a TypeError, only the host can create one. */
+static ant_value_t agb_iface_ctor(ant_params_t)
+{
+    (void)args;
+    (void)nargs;
+    (void)call_new_target;
+    return js_mkerr_typed(js, JS_ERR_TYPE, "Illegal constructor");
+}
+
+static void agb_iface_make_ctor(struct AntbClass* k)
+{
+    ant_t* js = k->js;
+    const char* interned;
+    ant_value_t cfunc;
+    ant_value_t ctor;
+
+    if (vtype(k->ctor) == kTypeFunction)
+        return;
+
+    /* js_make_ctor_cfunc requires named metadata; the name must outlive the
+     * class, so point it at ant's intern table (engine lifetime). */
+    interned = intern_string(js, k->name, strlen(k->name));
+    if (!interned)
+        return;
+
+    k->meta.fn     = agb_iface_ctor;
+    k->meta.name   = interned;
+    k->meta.length = 0;
+    k->meta.flags  = 0;
+
+    cfunc = js_mkfun_meta(&k->meta);
+    if (is_err(cfunc))
+        return;
+
+    ctor = js_make_ctor_cfunc(js, cfunc, k->proto, 0);
+    if (is_err(ctor))
+        return;
+
+    /* Interface objects inherit from their parent interface object, so
+     * HTMLDivElement.ELEMENT_NODE resolves through HTMLElement -> ... -> Node. */
+    js_set_proto_wb(js, ctor,
+                    (k->parent && vtype(k->parent->ctor) == kTypeFunction)
+                        ? k->parent->ctor : js->sym.function_proto);
+    k->ctor = ctor;
+}
+
+AntbClass* antb_class_create_iface(AntbEngine* engine, const char* name,
+                                   AntbClass* parent)
+{
+    struct AntbClass* k = antb_class_create(engine, name);
+
+    if (!k)
+        return NULL;
+
+    k->parent = parent;
+    js_set_proto_wb(k->js, k->proto,
+                    parent ? parent->proto : k->js->sym.object_proto);
+    mkprop(k->js, k->proto, k->js->sym.toStringTag_sym,
+           js_mkstr(k->js, k->name, strlen(k->name)),
+           ANT_PROP_ATTR_CONFIGURABLE);
+    agb_iface_make_ctor(k);
+    return k;
+}
+
+void antb_class_set_parent_value(AntbEngine* engine, AntbClass* klass,
+                                 AntbValue* parent_proto, AntbValue* parent_ctor)
+{
+    if (!engine || !klass || !parent_proto)
+        return;
+
+    js_set_proto_wb(klass->js, klass->proto, parent_proto->v);
+
+    if (parent_ctor && vtype(parent_ctor->v) == kTypeFunction) {
+        if (vtype(klass->ctor) != kTypeFunction)
+            agb_iface_make_ctor(klass);
+        if (vtype(klass->ctor) == kTypeFunction)
+            js_set_proto_wb(klass->js, klass->ctor, parent_ctor->v);
+    }
+}
+
+void antb_class_add_constant(AntbEngine* engine, AntbClass* klass,
+                             const char* name, double value)
+{
+    if (!engine || !klass || !name)
+        return;
+
+    if (vtype(klass->ctor) != kTypeFunction)
+        agb_iface_make_ctor(klass);
+    if (vtype(klass->ctor) != kTypeFunction)
+        return;
+
+    defhidden(klass->js, klass->ctor, name, strlen(name), js_mknum(value));
+}
+
+void antb_class_expose(AntbEngine* engine, AntbClass* klass)
+{
+    ant_t* js;
+    ant_value_t global;
+    ant_value_t existing;
+
+    if (!engine || !klass || !klass->js)
+        return;
+
+    js = klass->js;
+    if (vtype(klass->ctor) != kTypeFunction)
+        return;
+
+    global = js_glob(js);
+    existing = js_get(js, global, klass->name);
+    if (vtype(existing) != kTypeUndefined)
+        return;
+
+    js_set_global_builtin(js, klass->name, klass->ctor);
+}
+
+void antb_expose_classes(AntbEngine* engine)
+{
+    struct AntbClass* k;
+
+    if (!engine || !engine->js)
+        return;
+
+    for (k = g_classes; k; k = k->next) {
+        if (k->js == engine->js)
+            antb_class_expose(engine, k);
     }
 }
 
@@ -3192,41 +3343,52 @@ AntbValue* antb_wrap_native_as(AntbEngine* engine, AntbClass* klass,
  * getter per instance instead. The table is per class and grows on demand. */
 
 static int agb_class_lookup_prop(AntbClass* k, const char* name,
-                                 AntbGetterFn* fn, void** user)
+                                 AntbGetterFn* fn, AntbSetterFn* setter,
+                                 void** user)
 {
+    struct AntbClass* c;
     int i;
 
     if (!k)
         return 0;
 
-    for (i = 0; i < k->propCount; i++) {
-        if (strcmp(k->props[i].name, name) == 0) {
-            *fn   = k->props[i].getter;
-            *user = k->props[i].user;
-            return 1;
+    /* Explicit names first, through the whole interface chain: a child's
+     * catch-all must not shadow an attribute its parent declared. */
+    for (c = k; c; c = c->parent) {
+        for (i = 0; i < c->propCount; i++) {
+            if (strcmp(c->props[i].name, name) == 0) {
+                *fn     = c->props[i].getter;
+                *setter = c->props[i].setter;
+                *user   = c->props[i].user;
+                return 1;
+            }
         }
     }
 
-    /* catch-all entry (registered under the empty name) handles every name
-     * the class does not list explicitly; the getter itself dispatches */
-    for (i = 0; i < k->propCount; i++) {
-        if (k->props[i].name[0] == '\0') {
-            *fn   = k->props[i].getter;
-            *user = k->props[i].user;
-            return 1;
+    /* Catch-all entry (registered under the empty name) handles every name
+     * the chain does not list explicitly; the getter itself dispatches. */
+    for (c = k; c; c = c->parent) {
+        for (i = 0; i < c->propCount; i++) {
+            if (c->props[i].name[0] == '\0') {
+                *fn     = c->props[i].getter;
+                *setter = c->props[i].setter;
+                *user   = c->props[i].user;
+                return 1;
+            }
         }
     }
     return 0;
 }
 
-int antb_class_set_property(AntbEngine* engine, AntbClass* klass,
-                            const char* name, AntbGetterFn fn, void* user)
+int antb_class_set_property_rw(AntbEngine* engine, AntbClass* klass,
+                               const char* name, AntbGetterFn getter,
+                               AntbSetterFn setter, void* user)
 {
     int n;
 
     (void)engine;
 
-    if (!klass || !name || !fn)
+    if (!klass || !name || !getter)
         return 0;
 
     if (klass->propCount == klass->propCap) {
@@ -3243,10 +3405,17 @@ int antb_class_set_property(AntbEngine* engine, AntbClass* klass,
     n = klass->propCount;
     memset(&klass->props[n], 0, sizeof(klass->props[n]));
     strncpy(klass->props[n].name, name, sizeof(klass->props[n].name) - 1);
-    klass->props[n].getter = fn;
+    klass->props[n].getter = getter;
+    klass->props[n].setter = setter;
     klass->props[n].user   = user;
     klass->propCount = n + 1;
     return 1;
+}
+
+int antb_class_set_property(AntbEngine* engine, AntbClass* klass,
+                            const char* name, AntbGetterFn fn, void* user)
+{
+    return antb_class_set_property_rw(engine, klass, name, fn, NULL, user);
 }
 
 void antb_class_install_properties(AntbEngine* engine, AntbClass* klass, AntbValue* instance)
@@ -3266,6 +3435,12 @@ void antb_class_install_properties(AntbEngine* engine, AntbClass* klass, AntbVal
 
     js_set_native(instance->v, entry, AGB_TAG_GETTER);
     js_set_getter(instance->v, agb_getter_trampoline);
+
+    /* Writes must reach the class table too: a wrapper whose only write path
+     * is the property store would turn `el.id = x` into an expando. The
+     * trampoline answers false for names the class does not handle, and the
+     * store then runs normally. */
+    js_set_setter(instance->v, agb_setter_trampoline);
 }
 
 

@@ -333,6 +333,58 @@ AGB_API AntbValue* antb_wrap_native_as(AntbEngine* engine, AntbClass* klass,
 AGB_API AntbValue* antb_wrap_native_as_owner(AntbEngine* engine, AntbClass* klass,
                                              void* ptr, unsigned tag, void* owner);
 
+/* ---- interfaces (DOM bindings) ------------------------------------------ *
+ * A plain class has a prototype object but no constructor, no parent and no
+ * @@toStringTag: a wrapper answers `instanceof` only against that one class.
+ * An INTERFACE adds the WebIDL shape:
+ *
+ *   HTMLInputElement.prototype -> HTMLElement.prototype -> ... -> Object.prototype
+ *   HTMLInputElement (constructor, [[Prototype]] = HTMLElement)
+ *   HTMLInputElement.prototype.constructor === HTMLInputElement
+ *   HTMLInputElement.prototype[Symbol.toStringTag] === "HTMLInputElement"
+ *
+ * so wrappers created with antb_wrap_native_as() answer instanceof,
+ * Object.getPrototypeOf, constructor and Object.prototype.toString the way a
+ * browser does. The constructor is NOT constructible: calling `new
+ * HTMLInputElement()` throws a TypeError ("Illegal constructor"), as WebIDL
+ * requires for ordinary interfaces. */
+
+/* Creates an interface; `parent` may be NULL (the prototype then inherits from
+ * Object.prototype). */
+AGB_API AntbClass* antb_class_create_iface(AntbEngine* engine, const char* name,
+                                           AntbClass* parent);
+
+/* Re-parents an interface to an existing prototype/constructor pair. Used when
+ * the host already has the parent interface as a JS builtin (the engine's own
+ * `EventTarget`): the bridge must not create a second, unrelated one, or
+ * `el instanceof EventTarget` would test the wrong prototype. `parent_ctor`
+ * may be NULL when the builtin has no constructor object. */
+AGB_API void antb_class_set_parent_value(AntbEngine* engine, AntbClass* klass,
+                                         AntbValue* parent_proto,
+                                         AntbValue* parent_ctor);
+
+/* Class-level getter+setter pair, dispatched by property name; the empty name
+ * registers the catch-all the host facade falls back to. */
+AGB_API int antb_class_set_property_rw(AntbEngine* engine, AntbClass* klass,
+                                       const char* name,
+                                       AntbGetterFn getter, AntbSetterFn setter,
+                                       void* user);
+
+/* Static constant on the interface object: antb_class_add_constant(Node,
+ * "ELEMENT_NODE", 1) makes HTMLDivElement.ELEMENT_NODE work through the
+ * constructor's [[Prototype]] chain. */
+AGB_API void antb_class_add_constant(AntbEngine* engine, AntbClass* klass,
+                                     const char* name, double value);
+
+/* Installs one interface's constructor on the CURRENT realm's global object
+ * (non-enumerable). An existing global of that name is left alone, so a host
+ * builtin such as EventTarget keeps its native constructor. */
+AGB_API void antb_class_expose(AntbEngine* engine, AntbClass* klass);
+
+/* Same for every interface of this engine: call it once per realm before the
+ * page scripts (and before the host's own shims) run. */
+AGB_API void antb_expose_classes(AntbEngine* engine);
+
 /* Internal helpers (still exported so the C++ side can use them):
  * antb_class_set_property registers a getter in the class table,
  * antb_class_install_properties attaches the dispatching getter to one instance. */
