@@ -318,6 +318,20 @@ bridge_method_slots_test = executable(
 )
 test('bridge-method-slots', bridge_method_slots_test)
 
+# The class registry is per engine and dynamic (the DOM binding layer creates
+# one class per interface: ~120 per engine, and interfaces can declare more
+# than the old 32 attributes). The old process-wide 128-slot table lost the
+# second engine's classes silently.
+bridge_class_tables_test = executable(
+  'test-bridge-class-tables',
+  files('tests/test_bridge_class_tables.c', 'bridge/AntBridge.c'),
+  include_directories: [include, include_directories('bridge')],
+  dependencies: libant_dep,
+  c_args: ['-std=gnu23', '-UNDEBUG'],
+  build_by_default: false
+)
+test('bridge-class-tables', bridge_class_tables_test, timeout: 120)
+
 # The host abort path runs from another thread. Atomics.wait() without a timeout
 # must observe it (a plain condvar wait blocked forever), and the engine table
 # must survive create/destroy racing with antb_engines_js_depth() /
