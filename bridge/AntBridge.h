@@ -370,6 +370,19 @@ AGB_API int antb_class_set_property_rw(AntbEngine* engine, AntbClass* klass,
                                        AntbGetterFn getter, AntbSetterFn setter,
                                        void* user);
 
+/* Defines a WebIDL-style attribute accessor on the interface prototype:
+ *   receiver.name        calls getter(engine, receiver, "name", out, user)
+ *   receiver.name = v    calls setter(engine, receiver, "name", &v, user)
+ * The accessor is enumerable and configurable, like a WebIDL attribute, and
+ * the class catch-all ("") yields to it, so `'name' in receiver`,
+ * Object.getOwnPropertyDescriptor(Interface.prototype, ...) and for-in behave
+ * the way a browser's bindings do. `setter` may be NULL for a read-only
+ * attribute. */
+AGB_API int antb_class_define_attribute(AntbEngine* engine, AntbClass* klass,
+                                        const char* name,
+                                        AntbGetterFn getter, AntbSetterFn setter,
+                                        void* user);
+
 /* Static constant on the interface object: antb_class_add_constant(Node,
  * "ELEMENT_NODE", 1) makes HTMLDivElement.ELEMENT_NODE work through the
  * constructor's [[Prototype]] chain. */

@@ -79,6 +79,40 @@ static int catch_all_get(AntbEngine* engine, AntbValue* self, const char* name,
     return 1;
 }
 
+static int attr_get(AntbEngine* engine, AntbValue* self, const char* name,
+                    AntbValue* out, void* user)
+{
+    AntbValue* v;
+
+    (void)self;
+    (void)user;
+
+    if (!name || strcmp(name, "attrSeven") != 0)
+        return 0;
+
+    v = antb_make_number(engine, g_seven);
+    if (!v)
+        return 0;
+
+    antb_value_assign(out, v);
+    antb_value_release(v);
+    return 1;
+}
+
+static int attr_set(AntbEngine* engine, AntbValue* self, const char* name,
+                    const AntbValue* value, void* user)
+{
+    (void)engine;
+    (void)self;
+    (void)user;
+
+    if (!name || strcmp(name, "attrSeven") != 0)
+        return 0;
+
+    g_seven = antb_to_number(value);
+    return 1;
+}
+
 static const char kScript[] =
     "var r = [];"
     "r.push(Object.getPrototypeOf(div) === ProbeHTMLDivElement.prototype);"
@@ -109,6 +143,17 @@ static const char kScript[] =
     "r.push(div.seven === 7);"
     "div.seven = 9;"
     "r.push(div.seven === 9);"
+    "r.push(div.unknownName === 1234);"
+    /* WebIDL attribute: a real accessor on the interface prototype, and the
+     * class catch-all yields to it. */
+    "r.push(div.attrSeven === 9);"
+    "var ad = Object.getOwnPropertyDescriptor(ProbeElement.prototype, 'attrSeven');"
+    "r.push(!!ad && typeof ad.get === 'function' && typeof ad.set === 'function');"
+    "r.push(ad.enumerable === true && ad.configurable === true);"
+    "r.push('attrSeven' in div);"
+    "r.push(div.hasOwnProperty('attrSeven') === false);"
+    "div.attrSeven = 11;"
+    "r.push(div.attrSeven === 11);"
     "r.push(div.unknownName === 1234);"
     "r.push(typeof div.toString === 'function' && div.toString() === '[object ProbeHTMLDivElement]');"
     "var bad = [];"
@@ -164,6 +209,11 @@ int main(void)
         failures++;
     }
     antb_class_set_property(engine, node, "", catch_all_get, NULL);
+
+    if (!antb_class_define_attribute(engine, element, "attrSeven", attr_get, attr_set, NULL)) {
+        printf("FAIL: class attribute registration failed\n");
+        failures++;
+    }
 
     wrapper = antb_wrap_native_as(engine, div_element, (void*)&g_seven, INTERFACE_TAG);
     if (!wrapper) {

@@ -17,6 +17,7 @@
 #include "realm.h"      /* ant_realm_create / enter / collect */
 #include "errors.h"   /* js_print_stack_trace_vm */
 #include "cfunc.h"     /* js_mkfun_dyn */
+#include "descriptors.h" /* js_set_accessor_desc */
 #include "reactor.h"   /* ant_uv_run, js_poll_events */
 #include "runtime.h"
 #include "debug.h"   /* sv_debug_enable: AGB_JIT_DEBUG */
@@ -2687,6 +2688,11 @@ static ant_value_t agb_getter_trampoline(ant_t* js, ant_value_t obj,
     if (entry->klass) {
         if (!agb_class_lookup_prop(entry->klass, name, &fn, &setter, &user))
             return js_mkundef();
+        /* A NULL getter is a "declined" name: the class has a prototype
+         * accessor for it (antb_class_define_attribute), so answer undefined
+         * and let ant continue into the prototype. */
+        if (!fn)
+            return js_mkundef();
     } else {
         fn   = entry->fn;
         user = entry->user;
@@ -3449,6 +3455,129 @@ int antb_class_set_property(AntbEngine* engine, AntbClass* klass,
                             const char* name, AntbGetterFn fn, void* user)
 {
     return antb_class_set_property_rw(engine, klass, name, fn, NULL, user);
+}
+
+/* Appends a class property entry; `getter` may be NULL, which marks the name
+ * as "declined": the catch-all must not answer it (the prototype accessor
+ * does). Used by antb_class_define_attribute(). */
+static int agb_class_add_prop(AntbClass* klass, const char* name,
+                              AntbGetterFn getter, AntbSetterFn setter, void* user)
+{
+    int n;
+
+    if (!klass || !name || !name[0])
+        return 0;
+
+    if (klass->propCount == klass->propCap) {
+        int cap = klass->propCap ? klass->propCap * 2 : 8;
+        struct AntbClassProp* grown = (struct AntbClassProp*)realloc(
+            klass->props, (size_t)cap * sizeof(struct AntbClassProp));
+
+        if (!grown)
+            return 0;
+        klass->props   = grown;
+        klass->propCap = cap;
+    }
+
+    n = klass->propCount;
+    memset(&klass->props[n], 0, sizeof(klass->props[n]));
+    strncpy(klass->props[n].name, name, sizeof(klass->props[n].name) - 1);
+    klass->props[n].getter = getter;
+    klass->props[n].setter = setter;
+    klass->props[n].user   = user;
+    klass->propCount = n + 1;
+    return 1;
+}
+
+/* --- interface attributes (WebIDL accessors) ----------------------------- */
+
+#define AGB_TAG_ATTR 0x41545452u  /* 'ATTR' */
+
+typedef struct {
+    AntbEngine*  engine;
+    AntbGetterFn getter;
+    AntbSetterFn setter;
+    void*        user;
+    char         name[96];
+} agb_attr_entry;
+
+static agb_attr_entry* agb_attr_entry_of(ant_t* js)
+{
+    if (!js || !js->current_func)
+        return NULL;
+    return (agb_attr_entry*)js_get_native(js->current_func, AGB_TAG_ATTR);
+}
+
+static ant_value_t agb_attr_get_cfunc(ant_params_t)
+{
+    agb_attr_entry* e = agb_attr_entry_of(js);
+    AntbValue self_v;
+    AntbValue out_v;
+
+    if (!e || !e->getter)
+        return js_mkundef();
+
+    self_v.js = js;
+    self_v.v  = js->this_val;
+    out_v.js  = js;
+    out_v.v   = js_mkundef();
+
+    if (!e->getter(e->engine, &self_v, e->name, &out_v, e->user))
+        return js_mkundef();
+
+    return out_v.v;
+}
+
+static ant_value_t agb_attr_set_cfunc(ant_params_t)
+{
+    agb_attr_entry* e = agb_attr_entry_of(js);
+    AntbValue self_v;
+    AntbValue val_v;
+
+    if (!e || !e->setter || nargs < 1)
+        return js_mkundef();
+
+    self_v.js = js;
+    self_v.v  = js->this_val;
+    val_v.js  = js;
+    val_v.v   = args[0];
+
+    e->setter(e->engine, &self_v, e->name, &val_v, e->user);
+    return js_mkundef();
+}
+
+int antb_class_define_attribute(AntbEngine* engine, AntbClass* klass, const char* name,
+                                AntbGetterFn getter, AntbSetterFn setter, void* user)
+{
+    agb_attr_entry* e;
+    ant_value_t getfn;
+    ant_value_t setfn;
+
+    if (!engine || !engine->js || !klass || !klass->proto || !name || !name[0] || !getter)
+        return 0;
+
+    /* Register the decline first: the class dispatch answers undefined for the
+     * name, and ant continues the ordinary lookup into the prototype. */
+    if (!agb_class_add_prop(klass, name, NULL, NULL, NULL))
+        return 0;
+
+    e = (agb_attr_entry*)calloc(1, sizeof(*e));
+    if (!e)
+        return 0;
+
+    e->engine = engine;
+    e->getter = getter;
+    e->setter = setter;
+    e->user   = user;
+    strncpy(e->name, name, sizeof(e->name) - 1);
+
+    getfn = js_heavy_mkfun_native(engine->js, agb_attr_get_cfunc, e, AGB_TAG_ATTR);
+    setfn = setter ? js_heavy_mkfun_native(engine->js, agb_attr_set_cfunc, e, AGB_TAG_ATTR)
+                   : js_mkundef();
+
+    js_set_accessor_desc(engine->js, klass->proto, name, strlen(name), getfn, setfn,
+                         JS_DESC_E | JS_DESC_C);
+    return 1;
 }
 
 void antb_class_install_properties(AntbEngine* engine, AntbClass* klass, AntbValue* instance)
